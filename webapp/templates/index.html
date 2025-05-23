@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能文档清洗与 Markdown 转换</title>
+    <!-- 稍后将创建 style.css -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>智能文档清洗与 Markdown 转换工具</h1>
+            <p>上传您的 .docx 或 .pdf 文件，将其转换为 Markdown 格式。</p>
+        </header>
+
+        <main>
+            <section class="upload-section">
+                <h2>上传文件</h2>
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div>
+                        <label for="fileInput">选择文件 (可多选):</label>
+                        <input type="file" id="fileInput" name="files[]" multiple required>
+                    </div>
+                    <button type="submit">开始处理</button>
+                </form>
+                <div id="uploadStatus" class="upload-status" aria-live="polite"></div>
+            </section>
+
+            <section class="results-section">
+                <h2>处理结果</h2>
+                <div id="resultsArea" class="results-area">
+                    <p>处理完成后，结果将显示在此处。</p>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>&copy; 2024 文档转换工具</p>
+        </footer>
+    </div>
+
+    <!-- 稍后将创建 script.js -->
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

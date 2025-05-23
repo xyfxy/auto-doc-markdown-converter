@@ -58,3 +58,7 @@ htmlcov/
 # Test directories for E2E tests
 test_input_e2e/
 test_output_e2e/
+
+# Flask Web App specific (temporary storage)
+webapp/uploads/
+webapp/results/
