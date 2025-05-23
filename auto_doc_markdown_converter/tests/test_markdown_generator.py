@@ -1,0 +1,1 @@
+# Placeholder for markdown_generator tests 

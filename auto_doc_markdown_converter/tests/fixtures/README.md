@@ -1,0 +1,1 @@
+This directory will contain sample files for testing, e.g., sample.docx, sample.pdf. 

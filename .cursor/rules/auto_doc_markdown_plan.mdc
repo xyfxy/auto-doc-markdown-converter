@@ -1,0 +1,162 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# 自动化文档清洗与 Markdown 转换工具 - Cursor Rule
+
+本文档是根据用户提供的 PRD（产品需求文档）创建的一个 Cursor Rule，旨在指导 AI 更好地理解和协助开发"自动化文档清洗与 Markdown 转换工具"。
+
+## 1. 项目核心目标与范围
+
+- **目标**: 开发一个自动化工具，使用大语言模型 (LLM) 将 `.pdf` 和 `.docx` 文档转换为结构化的 Markdown (`.md`) 文件，能智能识别一级 (H1)、二级 (H2)、三级 (H3) 和四级 (H4) 标题，并保留段落结构。
+- **输入**: `.pdf`, `.docx` 文件。
+- **核心处理**:
+    - 提取文本。
+    - LLM 分析文本，识别 H1, H2, H3, H4 标题。
+    - 保留段落。
+- **输出**: `.md` 文件 (`#` for H1, `##` for H2, `###` for H3, `####` for H4)。
+- **暂不包含**: 复杂表格、图片转换，扫描版 PDF 的 OCR。
+
+## 2. 主要功能模块与技术选型参考
+
+### 2.1 文件输入与管理
+- **FR1.1, FR1.2**: 支持用户上传/指定本地 `.pdf` 和 `.docx` 文件。
+- **代码结构**: 可能需要一个 `file_handler.py` 或类似模块处理文件读取、验证。
+
+### 2.2 初始内容提取
+- **FR2.1**: 从 `.docx` 提取文本。
+    - **技术**: `python-docx` ([python-docx.readthedocs.io](mdc:https:/python-docx.readthedocs.io/en/latest))
+    - **相关文件**: `doc_parser.py` (或 `docx_extractor.py`)
+- **FR2.2**: 从 `.pdf` 提取文本（文本型 PDF）。
+    - **技术**: `pdfplumber` ([github.com/jsvine/pdfplumber](mdc:https:/github.com/jsvine/pdfplumber)) 或 `PyPDF2` ([pypdf2.readthedocs.io](mdc:https:/pypdf2.readthedocs.io/en/latest))。`pdfplumber` 通常在提取文本流和布局方面更优。
+    - **相关文件**: `pdf_parser.py` (或 `pdf_extractor.py`)
+- **FR2.3**: 保留段落分隔。提取时需注意换行符的处理。
+
+### 2.3 LLM 内容解析与标题识别
+- **FR3.1 - FR3.5**: 将提取的文本发送给 LLM，识别 H1, H2, H3, H4 标题。
+    - **LLM 选择**:
+        - OpenAI GPT 系列 (e.g., `gpt-3.5-turbo`, `gpt-4`)
+        - Anthropic Claude 系列
+        - Google Gemini 系列
+        - 考虑成本、速率、长文本处理能力。
+    - **提示工程 (Prompt Engineering)**: 至关重要。
+        - 示例提示思路:
+          ```
+          你是一个智能文档分析助手。你的任务是分析以下提供的文本文档内容，并识别出其中的一级标题、二级标题、三级标题和四级标题。
+          一级标题通常是文档的主要章节标题。二级标题是主要章节下的小节标题。三级和四级标题则代表更细分的层级。
+          请将识别出的一级标题标记为 "H1:"，二级标题标记为 "H2:"，三级标题标记为 "H3:"，四级标题标记为 "H4:"，其他所有文本段落标记为 "P:"。
+          确保每个段落（包括标题和普通段落）都以相应的标记开头，并另起一行。
+
+          例如：
+          H1: 文档主标题
+          P: 这是引言段落。
+          H2: 第一个子章节
+          P: 这是子章节的第一段内容。
+          H3: 第一个子章节的小节
+          P: 这是小节的内容。
+          H4: 小节下的细分点
+          P: 这是细分点的具体说明。
+          H2: 第二个子章节
+          P: 这是另一个子章节的内容。
+
+          以下是需要你处理的文档内容：
+          ---
+          [此处插入从文档提取的纯文本内容]
+          ---
+          请严格按照上述格式输出分析结果。
+          ```
+    - **相关模块**: `llm_processor.py` 或 `title_identifier.py`
+    - **关键函数**: `analyze_text_with_llm(text: str) -> str` (返回带标记的文本)
+
+### 2.4 Markdown 生成
+- **FR4.1 - FR4.4**: 根据 LLM 返回的标记文本生成 Markdown。
+    - 将 "H1: Title Text" 转换为 `# Title Text`
+    - 将 "H2: Title Text" 转换为 `## Title Text`
+    - 将 "H3: Title Text" 转换为 `### Title Text`
+    - 将 "H4: Title Text" 转换为 `#### Title Text`
+    - 将 "P: Paragraph text" 转换为 `Paragraph text`
+    - 保持原始顺序。
+- **相关模块**: `markdown_generator.py`
+- **关键函数**: `generate_markdown_from_labeled_text(labeled_text: str) -> str`
+
+### 2.5 输出处理
+- **FR5.1, FR5.2**: 保存为 `.md` 文件，文件名与输入相同（扩展名不同），允许指定输出路径。
+- **相关代码**: 集成在主控制流或 `file_handler.py` 中。
+
+### 2.6 错误处理与日志
+- **FR6.1 - FR6.3**: 文件类型检查、API 调用错误捕获、日志记录。
+- **实现**: 使用 try-except 块，Python `logging` 模块。
+
+## 3. 非功能需求关注点
+
+- **准确性 (NFR1.1)**: LLM 提示词优化和可能的后处理规则是关键。
+- **性能 (NFR2.1)**: LLM API 响应是瓶颈，考虑异步处理或流式处理（如果 LLM API 支持）。
+- **易用性 (NFR3.1)**: 初期可从 CLI 开始。
+    - **技术**: `argparse` 或 `click` 库。
+    - **主入口**: `main.py`
+- **可靠性 (NFR4.1)**: 健壮的文本提取和 LLM 交互逻辑。
+- **兼容性 (NFR5.1)**: 标准 Markdown 语法，一般不会有问题。
+
+## 4. 技术栈总结
+
+- **Python 3.x**
+- **文本提取**:
+    - `python-docx`
+    - `pdfplumber` (或 `PyPDF2`)
+- **LLM**:
+    - `openai` (Python library for OpenAI API)
+    - `anthropic` (Python library for Anthropic API)
+    - `google-generativeai` (Python library for Gemini API)
+- **CLI (可选)**:
+    - `argparse` (built-in)
+    - `click`
+- **日志**:
+    - `logging` (built-in)
+
+## 5. 建议开发步骤与文件结构 (初步)
+
+```
+/auto_doc_markdown_converter
+|-- main.py                     # 主程序入口，CLI接口
+|-- requirements.txt            # 项目依赖
+|-- /src
+|   |-- __init__.py
+|   |-- file_handler.py         # 文件读取、保存、路径管理
+|   |-- docx_extractor.py       # DOCX 文本提取
+|   |-- pdf_extractor.py        # PDF 文本提取
+|   |-- llm_processor.py        # LLM 交互、提示工程、标题识别逻辑
+|   |-- markdown_generator.py   # 从 LLM 输出生成 Markdown
+|   |-- utils.py                # (可选) 通用工具函数，日志配置
+|-- /tests                      # (推荐) 单元测试和集成测试
+|   |-- test_docx_extractor.py
+|   |-- test_pdf_extractor.py
+|   |-- test_llm_processor.py
+|   |-- test_markdown_generator.py
+|   |-- /fixtures               # 测试用的示例文件 (sample.docx, sample.pdf)
+|-- /.cursor/rules
+|   |-- auto_doc_markdown_plan.mdc # (本文件)
+|-- README.md                   # 项目说明
+```
+
+## 6. 下一步行动建议
+
+1.  **环境搭建**: 创建 Python 虚拟环境，安装基础库 (`python-docx`, `pdfplumber`)。
+2.  **文本提取模块**: 先实现 `docx_extractor.py` 和 `pdf_extractor.py` 的核心功能。编写测试用例。
+3.  **LLM 选型与测试**: 选择一个 LLM API，获取凭证。初步测试其对示例文本的标题识别能力（可手动测试提示词）。
+4.  **LLM 集成**: 实现 `llm_processor.py`，封装 API 调用和提示词逻辑。
+5.  **Markdown 生成**: 实现 `markdown_generator.py`。
+6.  **主程序**: 编写 `main.py` 集成所有模块，提供 CLI 接口。
+7.  **迭代优化**: 针对不同类型的文档进行测试，不断优化提示词和处理逻辑。
+
+这个 Rule 文件将帮助 AI 在后续的开发过程中提供更有针对性的建议和代码片段。
+请在开发过程中随时引用本文档中的模块和功能点。
+比如，你可以说："请帮我实现 `pdf_extractor.py` 中的文本提取功能，如 `auto_doc_markdown_plan.mdc` 中所述。"
+
+## 7. 开发与执行约定
+
+- **注释语言**: 所有代码内注释及文档字符串（docstrings）均统一使用中文。
+- **运行环境**: 项目的编译（如果适用）、执行和测试均应在配置好的 Python 虚拟环境中进行，以确保依赖隔离和环境一致性。
+
+
+
