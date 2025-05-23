@@ -1,112 +1,63 @@
-# Placeholder for file handling logic 
-
 import os
+import logging
 from .docx_extractor import extract_text_from_docx
 from .pdf_extractor import extract_text_from_pdf
 
-SUPPORTED_EXTENSIONS = {".docx", ".pdf"}
+SUPPORTED_EXTENSIONS = {".docx": "docx", ".pdf": "pdf"}
 
-def validate_file(file_path: str) -> bool:
+# Configure logging for this module if not configured by main application
+# This ensures logs are captured even if file_handler is used standalone or tested separately.
+logger = logging.getLogger(__name__)
+if not logger.handlers: # Avoid adding multiple handlers if already configured
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+
+def get_file_type(filepath: str) -> str:
     """
-    验证文件扩展名是否受支持。
+    Determines the type of the file based on its extension.
 
-    参数:
-        file_path: 文件的路径。
+    Args:
+        filepath: The path to the file.
 
-    返回:
-        如果支持则为 True，否则为 False。
+    Returns:
+        "docx", "pdf", or "unsupported".
     """
-    _, ext = os.path.splitext(file_path)
-    if ext.lower() not in SUPPORTED_EXTENSIONS:
-        print(f"错误: 文件类型 {ext} 不受支持。支持的类型为: {', '.join(SUPPORTED_EXTENSIONS)}")
-        return False
-    if not os.path.exists(file_path):
-        print(f"错误: 文件未在 {file_path} 找到")
-        return False
-    return True
+    if not filepath: # Handle empty filepath string
+        logger.debug("get_file_type 收到一个空文件路径。") # 改为 DEBUG 级别
+        return "unsupported"
+    _, ext = os.path.splitext(filepath)
+    return SUPPORTED_EXTENSIONS.get(ext.lower(), "unsupported")
 
-def read_file_content(file_path: str) -> str | None:
+
+def read_file_content(filepath: str, file_type: str) -> str | None:
     """
-    从受支持的文件类型中读取内容。
+    Reads content from a supported file type using the appropriate extractor.
+    假定文件存在性由调用方检查。
 
-    参数:
-        file_path: 文件的路径。
+    Args:
+        filepath: 文件的路径。
+        file_type: 文件的类型 ("docx" 或 "pdf")，通常来自 get_file_type。
 
-    返回:
-        提取的文本（字符串形式），如果文件无效或提取失败则为 None。
+    Returns:
+        提取的文本（字符串形式），如果提取失败、文件类型不是 'docx' 或 'pdf'，则为 None。
     """
-    if not validate_file(file_path):
-        return None
-
-    _, ext = os.path.splitext(file_path)
-    extracted_text = ""
+    # 移除了 os.path.exists(filepath) 检查，因为调用方 (main.py) 应该已经检查过了。
 
     try:
-        if ext.lower() == ".docx":
-            extracted_text = extract_text_from_docx(file_path)
-        elif ext.lower() == ".pdf":
-            extracted_text = extract_text_from_pdf(file_path)
-            if not extracted_text: # pdf_extractor 在出错时可能返回空字符串
-                print(f"警告: 无法从 PDF 中提取文本: {file_path}。它可能是基于图像的 PDF 或已加密。")
-                return None # 如果 PDF 提取未产生任何内容，则显式返回 None
-        return extracted_text
-    except Exception as e:
-        print(f"处理文件 {file_path} 时发生意外错误: {e}")
+        if file_type == "docx":
+            logger.debug(f"正在从 DOCX 提取文本: {filepath}")
+            return extract_text_from_docx(filepath)
+        elif file_type == "pdf":
+            logger.debug(f"正在从 PDF 提取文本: {filepath}")
+            text = extract_text_from_pdf(filepath)
+            if text is None or not text.strip(): # 检查文本是否为 None 或空/仅空白
+                logger.warning(f"未能从 PDF 提取文本: {filepath}。它可能是基于图像的、已加密的或空的。")
+                return None 
+            return text
+        else:
+            # 如果调用方正确使用了 get_file_type，则理论上不应到达此路径。
+            logger.error(f"向 read_file_content 提供了不支持的文件类型 '{file_type}' 用于文件: {filepath}。无法读取内容。") # 改为 ERROR
+            return None
+    except Exception as e: # 捕获提取器可能抛出的任何其他异常
+        logger.error(f"处理文件 {filepath} (类型: {file_type}) 时发生意外错误: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
         return None
-
-# 示例用法 (仅用于测试目的):
-# if __name__ == '__main__':
-#     # 在当前目录或特定的 test_files 目录中创建用于测试的虚拟文件
-#     # 确保您有 sample.docx 和 sample.pdf (基于文本的) 才能使此示例工作。
-#     # 为简单起见，此示例假定它们与 file_handler.py 在同一目录中，
-#     # 或者您提供了完整路径。
-#
-#     # 虚拟 DOCX 创建 (需要 python-docx)
-#     # import os # 如果 reportlab 部分处于活动状态，则已导入
-#     from docx import Document
-#     doc = Document()
-#     doc.add_paragraph("来自 DOCX 的问候")
-#     sample_docx = "sample_fh.docx"
-#     doc.save(sample_docx)
-#
-#     # 虚拟 PDF 创建 (需要 reportlab)
-#     try:
-#         from reportlab.pdfgen import canvas
-#         from reportlab.lib.pagesizes import letter
-#         sample_pdf = "sample_fh.pdf"
-#         c = canvas.Canvas(sample_pdf, pagesize=letter)
-#         c.drawString(72, 750, "来自 PDF 的问候")
-#         c.save()
-#     except ImportError:
-#         print("未安装 Reportlab，跳过 file_handler 测试的 PDF 虚拟文件创建。")
-#         sample_pdf = None # 确保已定义
-#
-#     test_files = {
-#         "docx_valid": sample_docx,
-#         "pdf_valid": sample_pdf,
-#         "unsupported": "sample.txt", # 为此创建一个虚拟 sample.txt
-#         "non_existent": "non_existent_file.docx"
-#     }
-#
-#     # 创建一个虚拟 txt 文件
-#     with open("sample.txt", "w") as f:
-#         f.write("这是一个文本文件。")
-#
-#     for file_type, file_name in test_files.items():
-#         if file_name is None and file_type == "pdf_valid": # 如果 PDF 虚拟文件创建失败则跳过
-#             print("\n由于无法创建虚拟文件，跳过 PDF 测试。")
-#             continue
-#         print(f"\n测试 {file_type}: {file_name}")
-#         content = read_file_content(file_name)
-#         if content:
-#             print(f"提取的内容 (前 50 个字符): {content[:50]}...")
-#         else:
-#             print("未能提取内容或文件无效。")
-#
-#     # 清理虚拟文件
-#     if os.path.exists(sample_docx):
-#         os.remove(sample_docx)
-#     if sample_pdf and os.path.exists(sample_pdf):
-#         os.remove(sample_pdf)
-#     if os.path.exists("sample.txt"):
-#         os.remove("sample.txt") 

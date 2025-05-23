@@ -1,3 +1,4 @@
 python-docx
 pdfplumber
-reportlab 
+reportlab
+requests

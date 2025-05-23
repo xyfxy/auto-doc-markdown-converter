@@ -53,4 +53,8 @@ htmlcov/
 .ipynb_checkpoints
 
 # Environment variables
-.env 
+.env
+
+# Test directories for E2E tests
+test_input_e2e/
+test_output_e2e/
