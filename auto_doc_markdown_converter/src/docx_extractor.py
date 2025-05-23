@@ -1,8 +1,9 @@
-# Placeholder for DOCX extraction logic 
-
 import docx
+import logging
 
-def extract_text_from_docx(file_path: str) -> str:
+logger = logging.getLogger(__name__)
+
+def extract_text_from_docx(file_path: str) -> str | None:
     """
     从 .docx 文件中提取所有文本，保留段落分隔。
 
@@ -11,33 +12,20 @@ def extract_text_from_docx(file_path: str) -> str:
 
     返回:
         包含提取文本的字符串，段落之间用换行符分隔。
+        如果发生错误，则返回 None。
     """
-    doc = docx.Document(file_path)
-    full_text = []
-    for para in doc.paragraphs:
-        full_text.append(para.text)
-    return "\n".join(full_text)
-
-# 示例用法 (仅用于测试目的):
-# if __name__ == '__main__':
-#     # 创建一个临时的 docx 文件用于测试
-#     from docx import Document
-#     document = Document()
-#     document.add_heading('文档标题', 0)
-#     document.add_paragraph('这是第一个段落。')
-#     document.add_paragraph('这是第二个段落，包含更多文本。')
-#     document.add_paragraph('以及第三个段落。')
-#     dummy_docx_path = "sample_for_extractor.docx"
-#     document.save(dummy_docx_path)
-#
-#     try:
-#         text = extract_text_from_docx(dummy_docx_path)
-#         print(f"从 {dummy_docx_path} 提取的文本:")
-#         print(text)
-#     except Exception as e:
-#         print(f"发生错误: {e}")
-#     finally:
-#         # 清理临时文件
-#         import os
-#         if os.path.exists(dummy_docx_path):
-#             os.remove(dummy_docx_path) 
+    try:
+        logger.debug(f"开始从 DOCX 文件提取文本: {file_path}")
+        doc = docx.Document(file_path)
+        full_text = []
+        for para in doc.paragraphs:
+            full_text.append(para.text)
+        extracted_str = "\n".join(full_text)
+        logger.debug(f"成功从 DOCX 文件提取文本: {file_path}")
+        return extracted_str
+    except docx.opc.exceptions.PackageNotFoundError:
+        logger.error(f"无法打开或解析 DOCX 文件 (可能文件不存在、已损坏或不是有效的 DOCX 格式): {file_path}")
+        return None
+    except Exception as e:
+        logger.error(f"从 DOCX 文件 {file_path} 提取文本时发生意外错误: {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
+        return None
