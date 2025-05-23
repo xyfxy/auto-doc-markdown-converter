@@ -21,6 +21,10 @@ def analyze_text_with_llm(text: str) -> str | None:
         LLM 识别的包含标题和段落的结构化文本。
         如果发生严重错误或 API 调用失败，则返回 None。
     """
+    # --- Mock LLM 调用已移除，恢复真实 API 调用逻辑 ---
+    # logger.info("LLM 分析被 Mock，返回固定模拟输出。")
+    # return "H1: 模拟标题\nP: 这是一个通过 Mock LLM 生成的模拟段落。"
+
     if not config.API_KEY:
         logger.critical("DashScope API 密钥 (LLM_API_KEY) 未配置。")
         return None

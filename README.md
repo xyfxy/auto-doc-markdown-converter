@@ -129,9 +129,149 @@ python -m auto_doc_markdown_converter.main <input_path> <output_dir> [options]
     python -m auto_doc_markdown_converter.main ./input_document_folder/ ./processed_markdown_files/
     ```
 
-## 🔄 工作流程
+## 🌐 运行 Web 应用 (Flask)
 
-本工具处理文档的流程如下：
+除了命令行界面，本项目还提供了一个基于 Flask 的 Web 应用，允许用户通过浏览器上传文档并获取转换后的 Markdown。
+
+### 前提条件
+
+1.  **完成安装**: 请确保您已按照 [环境要求与安装](#️-环境要求与安装) 部分的说明完成了所有依赖的安装 (特别是 `Flask`，它已包含在 `requirements.txt` 中)。
+2.  **配置环境变量**: 运行 Web 应用前，必须正确设置 [配置](#️-配置) 部分描述的环境变量 (`LLM_API_KEY`, `LLM_API_ENDPOINT`, 以及可选的 `LLM_MODEL_ID`)。这些变量对于 Web 应用的核心文档处理功能同样至关重要。
+
+### 启动 Web 应用
+
+您可以选择以下任一方式从项目的根目录启动 Flask 开发服务器：
+
+**方式一：直接运行 `app.py`**
+
+这种方式简单直接，适合快速启动。
+
+```bash
+# 确保您当前位于项目的根目录下
+python webapp/app.py
+```
+启动后，应用通常会监听 `http://0.0.0.0:5000/` 或 `http://127.0.0.1:5000/`。控制台输出会显示确切的监听地址。
+
+**方式二：使用 `flask run` 命令 (推荐)**
+
+这是 Flask 官方推荐的启动开发服务器的方式，提供了更灵活的配置选项。
+
+1.  **设置必要的环境变量** (只需在当前终端会话设置一次，或将其添加到您的 shell 配置文件中，如 `.bashrc`, `.zshrc` 等):
+
+    *   **Linux/macOS**:
+        ```bash
+        export FLASK_APP=webapp/app.py
+        export FLASK_ENV=development  # 启用调试模式，生产环境请勿使用
+        ```
+    *   **Windows (CMD)**:
+        ```cmd
+        set FLASK_APP=webapp\app.py
+        set FLASK_ENV=development
+        ```
+    *   **Windows (PowerShell)**:
+        ```powershell
+        $env:FLASK_APP="webapp\app.py"
+        $env:FLASK_ENV="development"
+        ```
+    *   **说明**:
+        *   `FLASK_APP` 指向 Flask 应用的入口文件。
+        *   `FLASK_ENV=development` 会启用调试模式，这在开发阶段非常有用，但在生产环境中不应使用。
+
+2.  **运行 Flask 应用**:
+    ```bash
+    flask run --host=0.0.0.0 --port=5000
+    ```
+    *   `--host=0.0.0.0` 使服务器可以从网络中的任何 IP 地址访问（对于虚拟机或容器环境很方便），如果只想本机访问，可以省略或使用 `127.0.0.1`。
+    *   `--port=5000` 指定监听端口，您可以根据需要更改。
+    *   如果已设置 `FLASK_ENV=development`，则通常无需显式传递 `--debug` 选项给 `flask run`。
+
+### 访问 Web 应用
+
+启动成功后，打开您的 Web 浏览器，并访问控制台输出中显示的地址，通常是：
+
+```
+http://127.0.0.1:5000/
+```
+
+您应该能看到 "Flask Web App 正在运行!" 的消息。后续步骤将实现文件上传和下载的用户界面。
+
+## 🧪 手动测试 Web 应用
+
+在您按照前面的说明成功安装了所有依赖、配置了必要的环境变量并启动了 Flask Web 应用后，您可以按照以下步骤手动测试其功能。
+
+**前提条件:**
+1.  **Python 环境已配置**: 确保您的 Python 环境 (推荐 Python 3.8+) 已设置，并且项目的虚拟环境（如果使用）已激活。
+2.  **依赖已安装**: 已在项目根目录下运行 `pip install -r requirements.txt`。
+3.  **环境变量已设置**:
+    *   `LLM_API_KEY`: 设置为您的有效 DashScope API 密钥。
+    *   `LLM_API_ENDPOINT`: 设置为 DashScope OpenAI 兼容模式的基础 URL (例如, `https://dashscope.aliyuncs.com/compatible-mode/v1`)。
+    *   `LLM_MODEL_ID`: (可选) 设置为您希望使用的模型 ID (例如, `qwen-plus`)。如果未设置，将使用默认模型。
+    *   **注意**: 对于当前阶段的测试，如果您想完全模拟而不产生实际的 LLM API 调用费用，您可以临时修改 `auto_doc_markdown_converter/src/llm_processor.py` 文件，在 `analyze_text_with_llm` 函数的开头直接返回一个固定的模拟字符串，例如：
+        ```python
+        # auto_doc_markdown_converter/src/llm_processor.py
+        def analyze_text_with_llm(text: str) -> Optional[str]: # 确保导入 Optional
+            logger.info("LLM 分析被 Mock，返回固定模拟输出。")
+            return "H1: 模拟标题\nP: 这是一个通过 Mock LLM 生成的模拟段落。"
+            # ... (原有的真实 API 调用逻辑) ...
+        ```
+        测试完毕后，请记得移除或注释掉此 mock 代码以恢复真实 LLM 调用。
+4.  **Web 应用已启动**: 按照 "[运行 Web 应用 (Flask)](#️-运行-web-应用-flask)" 部分的说明，已成功启动 Flask 开发服务器 (例如，通过 `python webapp/app.py`)。服务器应在控制台显示正在运行，并监听类似 `http://127.0.0.1:5000/` 的地址。
+
+**测试步骤:**
+
+1.  **访问 Web 界面**:
+    *   打开您的 Web 浏览器 (推荐使用 Chrome, Firefox 等现代浏览器)。
+    *   在地址栏输入 Flask 应用运行的地址 (通常是 `http://127.0.0.1:5000/`) 并回车。
+    *   **预期结果**: 您应该能看到“智能文档清洗与 Markdown 转换工具”的页面，包含文件选择区域和“开始处理”按钮，并且页面样式已正确加载。
+
+2.  **测试单个文件上传与处理**:
+    *   准备一个小型、有效的 `.docx` 文件 (例如，内容为 "你好世界" 的 `test_doc.docx`)。
+    *   点击页面上的“选择文件”或类似按钮，选择您准备的 `test_doc.docx` 文件。
+    *   点击“开始处理”按钮。
+    *   **预期行为与结果**:
+        *   页面上的状态区域 (`uploadStatus`) 应依次显示类似“正在准备上传...”、“正在上传文件...”、“正在处理文件，请稍候...”、“处理完成！”的提示。
+        *   在“处理结果”区域 (`resultsArea`)，应出现一个针对 `test_doc.docx` 的条目，显示：
+            *   原始文件名。
+            *   处理状态为“处理成功”。
+            *   一个名为 `test_doc.md` (或类似) 的下载链接。
+            *   一个“预览 Markdown”按钮。
+        *   点击“预览 Markdown”按钮：页面上应在该条目下方动态加载并显示 Markdown 内容的预览。如果使用了上述的 LLM mock，预览内容应为：
+            ```
+            H1: 模拟标题
+            P: 这是一个通过 Mock LLM 生成的模拟段落。
+            ```
+            (实际 Markdown 渲染后可能是： `# 模拟标题\n\n这是一个通过 Mock LLM 生成的模拟段落。`)
+        *   点击下载链接：浏览器应开始下载 `test_doc.md` 文件。打开该文件，其内容应与预览内容一致。
+    *   重复此步骤，但使用一个小型、有效的 `.pdf` 文件进行测试。预期行为和结果类似。
+
+3.  **测试多个文件上传与处理**:
+    *   准备一个 `.docx` 文件和一个 `.pdf` 文件。
+    *   点击“选择文件”按钮，同时选中这两个文件。
+    *   点击“开始处理”按钮。
+    *   **预期行为与结果**:
+        *   状态区域正常更新。
+        *   “处理结果”区域应为这两个文件分别显示处理结果条目，每个条目都应包含成功的状态、下载链接和预览按钮。
+        *   分别测试每个文件的下载和预览功能，应均能正常工作。
+
+4.  **测试不支持的文件类型**:
+    *   准备一个文本文件 (例如 `.txt`) 或图片文件 (例如 `.jpg`)。
+    *   选择该文件并点击“开始处理”。
+    *   **预期行为与结果**:
+        *   在“处理结果”区域，该文件的条目应显示处理状态为“处理失败”，并给出类似“不支持的文件类型”的错误信息。
+
+5.  **测试未选择文件即提交**:
+    *   不选择任何文件，直接点击“开始处理”按钮。
+    *   **预期行为与结果**:
+        *   页面应给出提示，例如在“处理结果”区域显示“请至少选择一个文件。”。
+
+**问题排查提示:**
+*   如果在测试过程中遇到问题，请首先检查运行 Flask 应用的服务器控制台。通常，详细的错误信息和日志会输出在那里。
+*   确认所有环境变量都已正确设置并对 Flask 应用可见。
+*   打开浏览器的开发者工具 (通常按 F12)，检查“控制台 (Console)”和“网络 (Network)”面板，看是否有前端 JavaScript 错误或 API 请求失败的信息。
+
+---
+
+## 🔄 工作流程
 
 1.  **参数解析与环境检查**:
     *   程序首先解析用户通过命令行提供的输入路径、输出目录和选项。

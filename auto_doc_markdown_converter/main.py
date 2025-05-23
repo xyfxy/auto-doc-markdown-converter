@@ -10,11 +10,10 @@ import logging
 from pathlib import Path
 
 # Project-specific imports
-from src.file_handler import get_file_type, read_file_content
-from src.llm_processor import analyze_text_with_llm
-from src.markdown_generator import generate_markdown_from_labeled_text
-from src.config import API_KEY, API_ENDPOINT # To check if they are set
+# 移除了不再直接使用的导入：get_file_type, read_file_content, analyze_text_with_llm, generate_markdown_from_labeled_text
+from src.config import API_KEY, API_ENDPOINT # 仍然需要用于初始检查
 from src.utils import setup_logging # 导入新的日志设置函数
+from src.core_processor import process_document_to_markdown # 导入新的核心处理函数
 
 # Basic Logging Configuration - 将被移除
 # logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -95,77 +94,20 @@ def main_cli():
 
     for file_path_obj in files_to_process: 
         full_input_file_path_str = str(file_path_obj)
-        file_name_for_logging = file_path_obj.name 
+        # file_name_for_logging = file_path_obj.name # core_processor 内部会记录文件名
 
-        logger.info(f"正在处理文件: {file_name_for_logging}...")
-        try:
-            file_type = get_file_type(full_input_file_path_str)
-            if file_type == "unsupported":
-                logger.warning(f"文件 {file_name_for_logging} 类型不受支持。已跳过。")
-                error_count += 1
-                continue
-
-            logger.debug(f"正在从 {file_name_for_logging} (类型: {file_type}) 读取内容...")
-            raw_text = read_file_content(full_input_file_path_str, file_type)
-            if raw_text is None: # read_file_content 在发生错误时返回 None
-                logger.error(f"未能从 {file_name_for_logging} 读取内容。已在 read_file_content 中记录具体错误。已跳过。")
-                error_count += 1
-                continue
-            if not raw_text.strip(): # 检查是否为空或仅有空白字符
-                logger.warning(f"从 {file_name_for_logging} 提取的内容为空或仅包含空白字符。已跳过 LLM 处理。")
-                error_count += 1
-                continue
-            
-            logger.debug(f"提取的文本 (前 200 个字符): '{raw_text[:200].strip()}...'")
-
-            logger.debug(f"正在使用 LLM 分析来自 {file_name_for_logging} 的文本...")
-            llm_output = analyze_text_with_llm(raw_text)
-            if llm_output is None : # 假设 analyze_text_with_llm 在严重错误时返回 None
-                 logger.error(f"LLM 分析 {file_name_for_logging} 失败。已在 analyze_text_with_llm 中记录具体错误。已跳过。")
-                 error_count +=1
-                 continue
-            logger.debug(f"LLM 输出 (前 200 个字符): '{llm_output[:200].strip()}...'")
-
-            logger.debug(f"正在为 {file_name_for_logging} 生成 Markdown...")
-            markdown_content = generate_markdown_from_labeled_text(llm_output)
-            logger.debug(f"Markdown 内容 (前 200 个字符): '{markdown_content[:200].strip()}...'")
-
-            base_name_for_output = file_path_obj.stem + ".md"
-            output_file_path = output_dir / base_name_for_output
-            
-            logger.debug(f"准备将 Markdown 保存到: {output_file_path}")
-            try:
-                # 检查文件是否存在，并记录日志
-                if output_file_path.exists():
-                    logger.info(f"输出文件 {output_file_path} 已存在，将被覆盖。")
-                else:
-                    logger.debug(f"将创建新的输出文件：{output_file_path}")
-
-                with open(output_file_path, "w", encoding="utf-8") as f:
-                    f.write(markdown_content)
-                logger.info(f"已成功将 Markdown 内容保存到：{output_file_path.name} (在目录 {output_dir} 中)")
-
-            except PermissionError: # 更具体的异常捕获
-                logger.error(f"无法写入输出文件 {output_file_path}：权限不足。请检查输出目录的写入权限。")
-                error_count += 1
-                continue # 跳到下一个文件
-            except IOError as e: # 其他 IO 错误
-                logger.error(f"写入输出文件 {output_file_path} 时发生IO错误：{e}")
-                error_count += 1
-                continue # 跳到下一个文件
-            except Exception as e: # 捕获其他在文件写入过程中可能发生的意外错误
-                logger.error(f"保存输出文件 {output_file_path} 时发生预料之外的错误：{e}", exc_info=args.verbose)
-                error_count += 1
-                continue # 跳到下一个文件
-            
-            logger.info(f"已成功处理并将 {file_name_for_logging} 转换为 {base_name_for_output}") # 调整了成功日志的位置和内容
-            processed_count += 1
+        # 调用核心处理函数
+        # logger.info(f"正在处理文件: {file_name_for_logging}...") # core_processor 会记录开始处理
         
-        except ValueError as ve: # 例如，LLM 密钥/端点问题可能在 analyze_text_with_llm 中引发 ValueError
-            logger.error(f"处理 {file_name_for_logging} 时发生配置或值错误: {ve}", exc_info=args.verbose)
-            error_count += 1
-        except Exception as e: # 捕获其他意外错误
-            logger.error(f"处理 {file_name_for_logging} 时发生意外错误: {e}", exc_info=args.verbose)
+        # 注意：我们将 output_dir (Path 对象) 转换为字符串，因为 core_processor 当前期望字符串路径
+        result_md_path = process_document_to_markdown(str(file_path_obj), str(output_dir))
+
+        if result_md_path:
+            logger.info(f"文件 '{file_path_obj.name}' 已成功处理并保存到 '{result_md_path}'。")
+            processed_count += 1
+        else:
+            # process_document_to_markdown 内部已记录详细错误日志
+            logger.error(f"处理文件 '{file_path_obj.name}' 失败。详情请查看之前的日志。")
             error_count += 1
 
     logger.info(f"处理完成。成功处理 {processed_count} 个文件，发生 {error_count} 个错误。")
