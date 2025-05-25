@@ -95,4 +95,19 @@ if API_ENDPOINT is None:
 if LLM_MODEL_ID:
     logger.info(f"LLM 模型 ID: {LLM_MODEL_ID} (来自 .env 文件或系统环境变量)")
 else:
-    logger.info("环境变量 LLM_MODEL_ID 未设置 (在 .env 文件或系统环境变量中均未找到)。应用程序将在 llm_processor.py 中使用默认模型 ID (例如 'qwen-plus')。")
+    logger.info("环境变量 LLM_MODEL_ID 未设置。应用程序将在 llm_processor.py 中使用默认模型 ID (例如 'qwen-plus')。")
+
+# LLM API 调用超时时间 (单位：秒)
+# 从环境变量 LLM_API_CALL_TIMEOUT 读取，如果未设置，则默认为 300 秒 (5分钟)
+# 使用 os.getenv 是为了方便处理环境变量未设置时返回 None 的情况，然后我们可以提供默认值。
+# int() 转换确保了我们得到的是整数类型。
+LLM_API_CALL_TIMEOUT_STR = os.environ.get("LLM_API_CALL_TIMEOUT", "300")
+try:
+    LLM_API_CALL_TIMEOUT = int(LLM_API_CALL_TIMEOUT_STR)
+    if LLM_API_CALL_TIMEOUT <= 0:
+        logger.warning(f"环境变量 LLM_API_CALL_TIMEOUT 的值 '{LLM_API_CALL_TIMEOUT_STR}' 不是一个正整数，将使用默认值 300 秒。")
+        LLM_API_CALL_TIMEOUT = 300
+except ValueError:
+    logger.warning(f"环境变量 LLM_API_CALL_TIMEOUT 的值 '{LLM_API_CALL_TIMEOUT_STR}' 不是有效的整数，将使用默认值 300 秒。")
+    LLM_API_CALL_TIMEOUT = 300
+logger.info(f"LLM API 调用超时时间配置为: {LLM_API_CALL_TIMEOUT} 秒")
