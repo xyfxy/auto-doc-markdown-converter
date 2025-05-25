@@ -15,6 +15,8 @@
 *   **便捷的命令行界面 (CLI)**: 提供简单易用的命令行工具，方便集成到自动化流程或直接使用。
 *   **批量处理能力**: 支持对单个文件或整个目录下的所有受支持文件进行批量转换。
 *   **详细日志记录**: 在处理过程中输出详细的日志信息，方便用户追踪进度、快速定位和排查潜在问题。
+*   **并发处理长文档**: 对于超过特定长度的文档，能够并发向大模型发送请求，以提高处理速度。可通过环境变量 `MAX_CONCURRENT_LLM_REQUESTS` 配置并发数。
+*   **Markdown 预览修复**: Web 应用中的 Markdown 预览功能已修复，现在能够正确渲染 Markdown 内容为 HTML 格式进行展示。
 
 ## 🛠️ 环境要求与安装
 
@@ -65,6 +67,10 @@
     *   示例: `LLM_MODEL_ID="qwen-turbo"`
 *   `LLM_API_CALL_TIMEOUT`: (可选) LLM API 调用的超时时间，单位为秒。默认为 `300` 秒 (5分钟)。根据您的网络情况和处理文本的复杂程度，您可能需要调整此值。
     *   示例: `LLM_API_CALL_TIMEOUT="180"` (设置为3分钟)
+*   `MAX_CONCURRENT_LLM_REQUESTS`: **可选项**。指定在处理长文档时，可以同时向大型语言模型发送的并发请求的最大数量。默认值为 `5`。
+    *   当文档内容较多，需要被分割成多个块进行处理时，此设置生效。
+    *   增加此值可能会加快处理速度，但也可能增加系统负载和 API 请求频率。请根据您的机器性能和 API 服务商的速率限制进行调整。
+    *   示例: `MAX_CONCURRENT_LLM_REQUESTS="10"`
 
 **重要提示**:
 *   `LLM_API_KEY` 和 `LLM_API_ENDPOINT` 是程序运行所必需的核心配置。如果未正确设置，程序将无法调用 LLM API，从而导致处理失败。
@@ -78,6 +84,7 @@
         export LLM_API_ENDPOINT="https://dashscope.aliyuncs.com/compatible-mode/v1"
         export LLM_MODEL_ID="qwen-plus" # 可选
         export LLM_API_CALL_TIMEOUT="180" # 可选, 示例设置为3分钟
+        export MAX_CONCURRENT_LLM_REQUESTS="5" # 可选, 默认值为5
         ```
     *   永久设置: 将上述 `export` 命令添加到您的 shell 配置文件中 (例如 `~/.bashrc`, `~/.zshrc`)，然后重新加载配置文件 (例如 `source ~/.bashrc`) 或重启终端。
 *   **Windows**:
@@ -87,6 +94,7 @@
         set LLM_API_ENDPOINT="https://dashscope.aliyuncs.com/compatible-mode/v1"
         set LLM_MODEL_ID="qwen-plus" # 可选
         set LLM_API_CALL_TIMEOUT="180" # 可选, 示例设置为3分钟
+        set MAX_CONCURRENT_LLM_REQUESTS="5" # 可选, 默认值为5
         ```
     *   永久设置: 通过 "环境变量" 系统设置界面进行配置。
 
