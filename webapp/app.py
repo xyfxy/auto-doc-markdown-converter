@@ -68,13 +68,18 @@ def upload_files():
     results = []
 
     for file in uploaded_files:
+        # 首先使用原始文件名进行类型检查
         if file and file.filename and allowed_file(file.filename):
-            original_filename = secure_filename(file.filename)
-            temp_upload_path = os.path.join(app.config['UPLOAD_FOLDER'], original_filename)
+            # 在确认文件类型允许后，再获取安全的文件名用于保存
+            original_filename_for_saving = secure_filename(file.filename)
+            # 但日志和后续处理中，我们可能仍想引用用户上传时的原始文件名
+            user_original_filename = file.filename # 保留用户上传的原始文件名
+
+            temp_upload_path = os.path.join(app.config['UPLOAD_FOLDER'], original_filename_for_saving)
             
             try:
                 file.save(temp_upload_path)
-                logger.info(f"文件 '{original_filename}' 已临时保存到 '{temp_upload_path}'")
+                logger.info(f"文件 '{user_original_filename}' (保存为 '{original_filename_for_saving}') 已临时保存到 '{temp_upload_path}'")
 
                 # 调用核心处理逻辑
                 markdown_file_path = process_document_to_markdown(temp_upload_path, app.config['RESULTS_FOLDER'])
@@ -82,24 +87,24 @@ def upload_files():
                 if markdown_file_path:
                     processed_filename = os.path.basename(markdown_file_path)
                     results.append({
-                        "original_filename": original_filename,
+                        "original_filename": user_original_filename, # 返回给用户的应是原始文件名
                         "status": "success",
                         "processed_filename": processed_filename, # 用于后续下载
                         "message": "文件处理成功"
                     })
-                    logger.info(f"文件 '{original_filename}' 处理成功，输出为 '{processed_filename}'")
+                    logger.info(f"文件 '{user_original_filename}' 处理成功，输出为 '{processed_filename}'")
                 else:
                     results.append({
-                        "original_filename": original_filename,
+                        "original_filename": user_original_filename,
                         "status": "error",
                         "message": "文件处理失败 (核心处理器未返回有效路径，详见服务器日志)"
                     })
-                    logger.warning(f"文件 '{original_filename}' 处理失败 (核心处理器返回 None)。")
+                    logger.warning(f"文件 '{user_original_filename}' 处理失败 (核心处理器返回 None)。")
 
             except Exception as e:
-                logger.error(f"处理文件 '{original_filename}' 时发生严重错误: {e}", exc_info=True)
+                logger.error(f"处理文件 '{user_original_filename}' 时发生严重错误: {e}", exc_info=True)
                 results.append({
-                    "original_filename": original_filename,
+                    "original_filename": user_original_filename,
                     "status": "error",
                     "message": f"服务器内部错误: {str(e)}"
                 })
@@ -111,13 +116,13 @@ def upload_files():
                         logger.debug(f"已删除临时上传文件: {temp_upload_path}")
                     except OSError as e_remove:
                         logger.error(f"删除临时文件 {temp_upload_path} 失败: {e_remove}")
-        elif file and file.filename: # 文件存在但类型不允许
-            original_filename = secure_filename(file.filename)
-            logger.warning(f"文件 '{original_filename}' 的类型不被允许。")
+        elif file and file.filename: # 文件存在但类型不允许 (基于原始文件名判断)
+            user_original_filename = file.filename
+            logger.warning(f"文件 '{user_original_filename}' 的类型不被允许。")
             results.append({
-                "original_filename": original_filename,
+                "original_filename": user_original_filename,
                 "status": "error",
-                "message": f"文件类型 '{original_filename.rsplit('.', 1)[1]}' 不受支持。请上传 .docx 或 .pdf 文件。"
+                "message": f"文件类型 '{user_original_filename.rsplit('.', 1)[1].lower() if '.' in user_original_filename else '未知'}' 不受支持。请上传 .docx 或 .pdf 文件。"
             })
         else:
             logger.debug("在上传列表中遇到一个无效的或没有文件名的文件部分。")

@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 # 默认的 DashScope OpenAI 兼容模式模型 ID (如果环境变量未设置)
 DEFAULT_DASHSCOPE_MODEL_ID = "qwen-plus" 
 # 默认的 API 超时时间
-DEFAULT_API_TIMEOUT = 60 # 秒
+DEFAULT_API_TIMEOUT = 30000 # 秒
 
 def analyze_text_with_llm(text: str) -> str | None:
     """
