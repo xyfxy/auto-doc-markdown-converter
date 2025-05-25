@@ -63,6 +63,8 @@
 *   `LLM_MODEL_ID`: **可选项**。指定要使用的具体 LLM 模型 ID。如果未设置此环境变量，程序将默认使用 `qwen-plus` 模型。
     *   常用模型示例: `qwen-plus` (默认), `qwen-turbo`, `qwen-max`, `qwen-long`。请查阅最新的阿里云 DashScope 文档以获取可用模型列表和选择最适合您需求的模型。
     *   示例: `LLM_MODEL_ID="qwen-turbo"`
+*   `LLM_API_CALL_TIMEOUT`: (可选) LLM API 调用的超时时间，单位为秒。默认为 `300` 秒 (5分钟)。根据您的网络情况和处理文本的复杂程度，您可能需要调整此值。
+    *   示例: `LLM_API_CALL_TIMEOUT="180"` (设置为3分钟)
 
 **重要提示**:
 *   `LLM_API_KEY` 和 `LLM_API_ENDPOINT` 是程序运行所必需的核心配置。如果未正确设置，程序将无法调用 LLM API，从而导致处理失败。
@@ -75,6 +77,7 @@
         export LLM_API_KEY="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         export LLM_API_ENDPOINT="https://dashscope.aliyuncs.com/compatible-mode/v1"
         export LLM_MODEL_ID="qwen-plus" # 可选
+        export LLM_API_CALL_TIMEOUT="180" # 可选, 示例设置为3分钟
         ```
     *   永久设置: 将上述 `export` 命令添加到您的 shell 配置文件中 (例如 `~/.bashrc`, `~/.zshrc`)，然后重新加载配置文件 (例如 `source ~/.bashrc`) 或重启终端。
 *   **Windows**:
@@ -83,6 +86,7 @@
         set LLM_API_KEY="sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         set LLM_API_ENDPOINT="https://dashscope.aliyuncs.com/compatible-mode/v1"
         set LLM_MODEL_ID="qwen-plus" # 可选
+        set LLM_API_CALL_TIMEOUT="180" # 可选, 示例设置为3分钟
         ```
     *   永久设置: 通过 "环境变量" 系统设置界面进行配置。
 

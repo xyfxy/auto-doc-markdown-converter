@@ -1,14 +1,16 @@
 import logging
 import requests
-from . import config # 导入 config 模块以访问 API_KEY, API_ENDPOINT, LLM_MODEL_ID
+# 从 .config 模块导入所有需要的配置项
+from .config import API_KEY, API_ENDPOINT, LLM_MODEL_ID, LLM_API_CALL_TIMEOUT 
 
 # 获取模块特定的记录器
 logger = logging.getLogger(__name__)
 
-# 默认的 DashScope OpenAI 兼容模式模型 ID (如果环境变量未设置)
+# 默认的 DashScope OpenAI 兼容模式模型 ID (如果环境变量 LLM_MODEL_ID 未设置)
 DEFAULT_DASHSCOPE_MODEL_ID = "qwen-plus" 
-# 默认的 API 超时时间
-DEFAULT_API_TIMEOUT = 60 # 秒
+# 旧的 DEFAULT_API_TIMEOUT 常量将被移除或注释掉
+# # 默认的 API 超时时间
+# DEFAULT_API_TIMEOUT = 60 # 秒
 
 def analyze_text_with_llm(text: str) -> str | None:
     """
@@ -68,7 +70,8 @@ def analyze_text_with_llm(text: str) -> str | None:
     logger.debug(f"发送的请求体 (部分，不含文本): {{'model': '{llm_model_id}', 'messages': [{{'role': 'system', 'content': '...'}}, {{'role': 'user', 'content': '...'[:50] + '...'}}]}}")
 
     try:
-        response = requests.post(target_url, headers=headers, json=payload, timeout=DEFAULT_API_TIMEOUT)
+        # 使用从 config 模块导入的 LLM_API_CALL_TIMEOUT
+        response = requests.post(target_url, headers=headers, json=payload, timeout=LLM_API_CALL_TIMEOUT)
         response.raise_for_status()  # 对 HTTP 错误状态码 (4XX 或 5XX) 引发 HTTPError
 
         response_json = response.json()
@@ -95,7 +98,7 @@ def analyze_text_with_llm(text: str) -> str | None:
             return None
 
     except requests.exceptions.Timeout:
-        logger.error(f"请求 DashScope API 端点 {target_url} 超时 (超时设置为 {DEFAULT_API_TIMEOUT} 秒)。")
+        logger.error(f"请求 DashScope API 端点 {target_url} 超时 (超时设置为 {LLM_API_CALL_TIMEOUT} 秒)。")
         return None
     except requests.exceptions.HTTPError as e:
         error_details = f"HTTP 状态码: {e.response.status_code}"

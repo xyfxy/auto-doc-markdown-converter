@@ -1,11 +1,24 @@
 import os
 import logging
-from typing import Optional # 用于类型提示
+from typing import Optional, List # 确保 List 也被导入
 
 from .file_handler import get_file_type, read_file_content
 from .llm_processor import analyze_text_with_llm
 from .markdown_generator import generate_markdown_from_labeled_text
-from .config import API_KEY, API_ENDPOINT
+from .config import API_KEY, API_ENDPOINT, LLM_MODEL_ID # 导入 LLM_MODEL_ID
+from .text_splitter import ( # 导入文本分割相关函数和常量
+    estimate_tokens,
+    split_text_into_chunks,
+    merge_processed_chunks,
+    DEFAULT_MAX_CHUNK_TOKENS, 
+    DEFAULT_OVERLAP_TOKENS    
+)
+
+# 用于决定何时启动长文本处理流程的阈值
+# 直接使用 text_splitter 中的默认块大小作为参考
+MAX_TOKENS_FOR_DIRECT_PROCESSING = DEFAULT_MAX_CHUNK_TOKENS 
+# logger 实例将在函数内部获取，或者如果已在模块级别定义则可直接使用
+# 此处假设 logger 将在函数内通过 logging.getLogger(__name__) 获取
 
 def process_document_to_markdown(input_filepath: str, results_dir: str) -> Optional[str]:
     """
@@ -23,15 +36,23 @@ def process_document_to_markdown(input_filepath: str, results_dir: str) -> Optio
                        如果任何步骤失败或文件不受支持，则返回 None。
     """
     logger = logging.getLogger(__name__)
+    # 在函数开始处记录长文本处理阈值
+    logger.info(f"长文本处理阈值 (直接处理的最大 token 数): {MAX_TOKENS_FOR_DIRECT_PROCESSING}")
     logger.info(f"开始处理文档: {input_filepath}")
 
     # 1. 检查 API 配置 (关键步骤，确保核心功能可用)
+    # LLM_MODEL_ID 不是必需的，llm_processor 有默认值，所以不在此处检查
     if not API_KEY:
         logger.critical("核心处理器错误：LLM_API_KEY 未配置。无法继续处理。")
         return None
     if not API_ENDPOINT:
         logger.critical("核心处理器错误：LLM_API_ENDPOINT 未配置。无法继续处理。")
         return None
+    
+    # 获取模型ID，供 estimate_tokens 和 split_text_into_chunks 使用 (如果它们内部需要)
+    # llm_processor 内部会自行处理默认模型ID，这里主要是为 text_splitter 提供（如果其设计需要）
+    # 当前 text_splitter.estimate_tokens 的 model_name 参数是 Optional 且未被使用。
+    model_name_for_splitting = LLM_MODEL_ID # 可以是 None
 
     # 2. 获取文件类型
     logger.debug(f"正在获取文件 '{input_filepath}' 的类型...")
@@ -54,18 +75,85 @@ def process_document_to_markdown(input_filepath: str, results_dir: str) -> Optio
         logger.error(f"读取文件 '{input_filepath}' 内容时发生意外的严重错误: {e}", exc_info=True)
         return None
 
-    # 4. LLM 处理
-    logger.debug(f"正在使用 LLM 分析从 '{input_filepath}' 提取的文本...")
+    # 4. LLM 处理 (根据文本长度选择直接处理或分块处理)
+    llm_output: Optional[str] = None # 初始化 llm_output
     try:
-        llm_output = analyze_text_with_llm(raw_text)
-        if llm_output is None:
-            # analyze_text_with_llm 内部已记录具体错误 (例如，API 调用失败或响应无效)
-            logger.error(f"LLM 分析来自 '{input_filepath}' 的文本失败。")
+        num_estimated_tokens = estimate_tokens(raw_text, model_name=model_name_for_splitting)
+        logger.info(f"提取的原始文本估算 token 数: {num_estimated_tokens} (模型用于估算: {model_name_for_splitting or '默认'})")
+    except Exception as e_token:
+        logger.error(f"估算原始文本 token 数时发生错误 ({input_filepath}): {e_token}", exc_info=True)
+        return None # token 估算失败则无法继续
+
+    if num_estimated_tokens <= MAX_TOKENS_FOR_DIRECT_PROCESSING:
+        logger.info(f"文本 token 数 ({num_estimated_tokens}) 未超过阈值 ({MAX_TOKENS_FOR_DIRECT_PROCESSING})，直接进行 LLM 分析。")
+        try:
+            llm_output = analyze_text_with_llm(raw_text)
+            if llm_output is None: # analyze_text_with_llm 内部已记录错误
+                logger.error(f"直接 LLM 分析失败 ({input_filepath})。")
+                return None 
+        except Exception as e_llm_direct:
+            logger.error(f"直接 LLM 分析文本内容时发生意外错误 ({input_filepath}): {e_llm_direct}", exc_info=True)
             return None
-        logger.debug(f"LLM 分析完成 (前100字符预览: '{llm_output[:100].strip()}...')")
-    except Exception as e:
-        logger.error(f"使用 LLM 分析来自 '{input_filepath}' 的文本时发生意外的严重错误: {e}", exc_info=True)
+    else:
+        logger.info(f"文本 token 数 ({num_estimated_tokens}) 超过阈值 ({MAX_TOKENS_FOR_DIRECT_PROCESSING})，启动长文本分块处理流程。")
+        
+        # 4.1. 分割文本
+        try:
+            original_text_chunks = split_text_into_chunks(
+                raw_text,
+                model_name=model_name_for_splitting, # 传递模型名称
+                max_tokens_per_chunk=DEFAULT_MAX_CHUNK_TOKENS, # 使用导入的常量
+                overlap_tokens=DEFAULT_OVERLAP_TOKENS      # 使用导入的常量
+            )
+            if not original_text_chunks:
+                logger.error(f"文本分割后未产生任何有效文本块 ({input_filepath})。")
+                return None
+            logger.info(f"文本被分割成 {len(original_text_chunks)} 个原始块进行处理。")
+        except Exception as e_split:
+            logger.error(f"文本分割过程中发生错误 ({input_filepath}): {e_split}", exc_info=True)
+            return None
+
+        # 4.2. 分块处理
+        processed_chunks_results: List[str] = []
+        for i, chunk in enumerate(original_text_chunks):
+            logger.info(f"正在处理第 {i+1}/{len(original_text_chunks)} 个文本块...")
+            try:
+                processed_chunk = analyze_text_with_llm(chunk) # LLM_MODEL_ID 会在 analyze_text_with_llm 内部从 config 获取
+                if processed_chunk is None:
+                    logger.error(f"处理第 {i+1} 个文本块失败 ({input_filepath})。中止长文本处理。")
+                    return None # 任一分块处理失败，则整体失败
+                processed_chunks_results.append(processed_chunk)
+                logger.debug(f"第 {i+1} 个文本块处理完成。")
+            except Exception as e_llm_chunk:
+                logger.error(f"处理第 {i+1} 个文本块时发生意外错误 ({input_filepath}): {e_llm_chunk}", exc_info=True)
+                return None 
+
+        # 4.3. 合并结果
+        if not processed_chunks_results: 
+             logger.error(f"所有文本块处理后均未产生有效结果 ({input_filepath})。")
+             return None
+
+        logger.info(f"所有 {len(processed_chunks_results)} 个块均已处理，开始合并结果...")
+        try:
+            llm_output = merge_processed_chunks(
+                processed_chunks_results,
+                original_text_chunks, 
+                overlap_tokens=DEFAULT_OVERLAP_TOKENS, 
+                model_name=model_name_for_splitting
+            )
+            if not llm_output: # merge_processed_chunks 返回空字符串或None
+                logger.error(f"合并所有已处理文本块后结果为空 ({input_filepath})。")
+                return None
+            logger.info("所有文本块结果合并完成。")
+        except Exception as e_merge:
+            logger.error(f"合并已处理文本块时发生错误 ({input_filepath}): {e_merge}", exc_info=True)
+            return None
+    
+    # 确保 llm_output 在进入 Markdown 生成前有值（如果前面逻辑正确，应该有，除非直接处理或分块处理都失败了）
+    if llm_output is None:
+        logger.error(f"LLM 处理步骤未能生成任何输出内容 ({input_filepath})。")
         return None
+    logger.debug(f"LLM 处理完成，最终输出 (前100字符预览: '{llm_output[:100].strip()}...')")
 
     # 5. Markdown 生成
     logger.debug(f"正在从 LLM 输出为 '{input_filepath}' 生成 Markdown...")

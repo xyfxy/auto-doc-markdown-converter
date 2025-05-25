@@ -20,16 +20,27 @@ from . import markdown_generator
 # 导入并导出核心处理函数，使其可从 src 包直接访问
 from .core_processor import process_document_to_markdown
 
+# 导入并导出文本分割相关函数
+from .text_splitter import estimate_tokens, split_text_into_chunks
+
+# 也导入 text_splitter 模块本身，如果需要的话
+from . import text_splitter # 确保 text_splitter 模块被导入
+
+
 # 定义 __all__ 以明确指定从 "from src import *" 时应导入的内容
 # 这有助于控制命名空间并提供清晰的公共 API。
 __all__ = [
     'config',           # 应用程序配置
     'utils',            # 通用工具函数 (例如 setup_logging)
     'process_document_to_markdown', # 核心文档处理函数
+    'estimate_tokens',  # Token 估算函数
+    'split_text_into_chunks', # 文本分割函数
+    'text_splitter',    # 文本分割模块 (如果希望用户能通过 src.text_splitter 访问)
     # 以下模块通常不直接从 src 导入，而是通过其功能被调用，但可以根据需要添加
     # 'file_handler',
     # 'llm_processor',
     # 'markdown_generator',
     # 'docx_extractor',
     # 'pdf_extractor',
+    # 'core_processor', # 模块本身通常不导出，而是导出其函数
 ]
