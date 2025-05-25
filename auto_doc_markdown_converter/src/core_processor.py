@@ -1,22 +1,23 @@
 import os
 import logging
 from typing import Optional, List # 确保 List 也被导入
+import concurrent.futures # 导入 concurrent.futures
 
 from .file_handler import get_file_type, read_file_content
 from .llm_processor import analyze_text_with_llm
 from .markdown_generator import generate_markdown_from_labeled_text
-from .config import API_KEY, API_ENDPOINT, LLM_MODEL_ID # 导入 LLM_MODEL_ID
+from .config import API_KEY, API_ENDPOINT, LLM_MODEL_ID, MAX_CONCURRENT_LLM_REQUESTS # 导入 MAX_CONCURRENT_LLM_REQUESTS
 from .text_splitter import ( # 导入文本分割相关函数和常量
     estimate_tokens,
     split_text_into_chunks,
     merge_processed_chunks,
-    DEFAULT_MAX_CHUNK_TOKENS, 
-    DEFAULT_OVERLAP_TOKENS    
+    DEFAULT_MAX_CHUNK_TOKENS,
+    DEFAULT_OVERLAP_TOKENS
 )
 
 # 用于决定何时启动长文本处理流程的阈值
 # 直接使用 text_splitter 中的默认块大小作为参考
-MAX_TOKENS_FOR_DIRECT_PROCESSING = DEFAULT_MAX_CHUNK_TOKENS 
+MAX_TOKENS_FOR_DIRECT_PROCESSING = DEFAULT_MAX_CHUNK_TOKENS
 # logger 实例将在函数内部获取，或者如果已在模块级别定义则可直接使用
 # 此处假设 logger 将在函数内通过 logging.getLogger(__name__) 获取
 
@@ -114,31 +115,60 @@ def process_document_to_markdown(input_filepath: str, results_dir: str) -> Optio
             return None
 
         # 4.2. 分块处理
-        processed_chunks_results: List[str] = []
-        for i, chunk in enumerate(original_text_chunks):
-            logger.info(f"正在处理第 {i+1}/{len(original_text_chunks)} 个文本块...")
-            try:
-                processed_chunk = analyze_text_with_llm(chunk) # LLM_MODEL_ID 会在 analyze_text_with_llm 内部从 config 获取
-                if processed_chunk is None:
-                    logger.error(f"处理第 {i+1} 个文本块失败 ({input_filepath})。中止长文本处理。")
-                    return None # 任一分块处理失败，则整体失败
-                processed_chunks_results.append(processed_chunk)
-                logger.debug(f"第 {i+1} 个文本块处理完成。")
-            except Exception as e_llm_chunk:
-                logger.error(f"处理第 {i+1} 个文本块时发生意外错误 ({input_filepath}): {e_llm_chunk}", exc_info=True)
-                return None 
+        processed_chunks_results: List[Optional[str]] = [None] * len(original_text_chunks) # 初始化结果列表以保持顺序
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_LLM_REQUESTS) as executor:
+            future_to_chunk_index = {
+                executor.submit(analyze_text_with_llm, chunk): i
+                for i, chunk in enumerate(original_text_chunks)
+            }
+
+            for i, future in enumerate(concurrent.futures.as_completed(future_to_chunk_index)):
+                original_index = future_to_chunk_index[future]
+                try:
+                    chunk_result = future.result()
+                    if chunk_result is None:
+                        logger.error(f"处理文本块 {original_index + 1} (原始顺序) 失败 ({input_filepath})。中止长文本处理。")
+                        # 取消其他所有未完成的 future
+                        for f in future_to_chunk_index:
+                            if not f.done():
+                                f.cancel()
+                        return None
+                    processed_chunks_results[original_index] = chunk_result
+                    logger.info(f"文本块 {original_index + 1}/{len(original_text_chunks)} (原始顺序) 处理完成。")
+                except concurrent.futures.CancelledError:
+                    logger.warning(f"文本块 {original_index + 1} (原始顺序) 的处理被取消。")
+                    # 如果一个任务被取消（通常是因为另一个任务失败），则整体失败
+                    return None
+                except Exception as e_llm_chunk:
+                    logger.error(f"处理文本块 {original_index + 1} (原始顺序) 时发生意外错误 ({input_filepath}): {e_llm_chunk}", exc_info=True)
+                    # 取消其他所有未完成的 future
+                    for f in future_to_chunk_index:
+                        if not f.done():
+                            f.cancel()
+                    return None
+        
+        # 检查是否有任何块处理失败 (理论上如果上面逻辑正确，这里不会是 None，除非 analyze_text_with_llm 返回 None 但未抛异常)
+        if any(result is None for result in processed_chunks_results):
+            logger.error(f"一个或多个文本块未能成功处理 ({input_filepath})。")
+            return None
+
+        # 将 List[Optional[str]] 转换为 List[str] 给 merge_processed_chunks
+        # 此时可以安全地假设没有 None 值，因为上面已经检查过了
+        final_processed_chunks = [str(chunk) for chunk in processed_chunks_results]
+
 
         # 4.3. 合并结果
-        if not processed_chunks_results: 
+        if not final_processed_chunks: 
              logger.error(f"所有文本块处理后均未产生有效结果 ({input_filepath})。")
              return None
 
-        logger.info(f"所有 {len(processed_chunks_results)} 个块均已处理，开始合并结果...")
+        logger.info(f"所有 {len(final_processed_chunks)} 个块均已处理，开始合并结果...")
         try:
+            # 确保 merge_processed_chunks 接收的是 List[str]
             llm_output = merge_processed_chunks(
-                processed_chunks_results,
-                original_text_chunks, 
-                overlap_tokens=DEFAULT_OVERLAP_TOKENS, 
+                final_processed_chunks, # 使用转换后的列表
+                original_text_chunks,
+                overlap_tokens=DEFAULT_OVERLAP_TOKENS,
                 model_name=model_name_for_splitting
             )
             if not llm_output: # merge_processed_chunks 返回空字符串或None
