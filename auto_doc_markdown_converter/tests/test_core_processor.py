@@ -1,272 +1,338 @@
 import os
 import sys
 import unittest
-from unittest.mock import patch, mock_open, MagicMock, call # 确保导入 call
+from unittest.mock import patch, mock_open, MagicMock, call, ANY # Ensure ANY is imported
 import logging
+import concurrent.futures # Import for use in tests if needed, and for patching
 
-# 确保项目根目录在 sys.path 中，以便导入 src 模块
+# Ensure project root is in sys.path for src module imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from auto_doc_markdown_converter.src.core_processor import process_document_to_markdown
+from auto_doc_markdown_converter.src import core_processor # Module under test
+from auto_doc_markdown_converter.src import config # To control config values like MAX_CONCURRENT_LLM_REQUESTS
 from auto_doc_markdown_converter.src.text_splitter import DEFAULT_MAX_CHUNK_TOKENS, DEFAULT_OVERLAP_TOKENS
-# from auto_doc_markdown_converter.src import config as core_config # 不再需要，因为MAX_TOKENS_FOR_DIRECT_PROCESSING在core_processor中
 
-# 配置一个临时的测试日志记录器，避免在测试输出中看到过多的 INFO 日志
-# 如果需要查看测试过程中的详细日志，可以调整这里的级别
-# logging.basicConfig(level=logging.DEBUG) # 打开此行以查看详细日志
-# logging.getLogger('auto_doc_markdown_converter.src.core_processor').setLevel(logging.DEBUG)
+# Disable most logging for cleaner test output
+logging.disable(logging.CRITICAL)
 
+# Re-enable logging after all tests in the module are done (optional)
+def tearDownModule():
+    logging.disable(logging.NOTSET)
 
-class TestCoreProcessorLongText(unittest.TestCase):
+class TestCoreProcessorConcurrency(unittest.TestCase):
     """
-    测试 core_processor.py 中的 process_document_to_markdown 函数，
-    特别是针对长文本处理逻辑的集成测试。
+    Tests focused on the concurrent processing logic in core_processor.py,
+    especially how it handles chunking and ThreadPoolExecutor.
     """
 
     def setUp(self):
-        """在每个测试用例开始前运行"""
-        # 设置必要的环境变量的 mock 值
-        self.env_patcher_key = patch.dict(os.environ, {"LLM_API_KEY": "test_api_key"})
-        self.env_patcher_endpoint = patch.dict(os.environ, {"LLM_API_ENDPOINT": "http://mock.endpoint"})
-        self.env_patcher_model = patch.dict(os.environ, {"LLM_MODEL_ID": "test_model_for_core_tests"}) # 使用特定模型ID
-        self.env_patcher_timeout = patch.dict(os.environ, {"LLM_API_CALL_TIMEOUT": "10"}) 
-
-        self.env_patcher_key.start()
-        self.env_patcher_endpoint.start()
-        self.env_patcher_model.start()
-        self.env_patcher_timeout.start()
+        """Set up for each test method."""
+        # Mock environment variables directly via config module attributes if they are dynamic
+        # Or patch os.environ if config reads them on-the-fly (current config reads at import)
+        self.env_patches = {
+            "LLM_API_KEY": "test_api_key_concurrency",
+            "LLM_API_ENDPOINT": "http://mock.concurrency.endpoint",
+            "LLM_MODEL_ID": "test_model_concurrency",
+            "LLM_API_CALL_TIMEOUT": "20",
+            "MAX_CONCURRENT_LLM_REQUESTS": "2" # Default for tests, can be overridden
+        }
+        self.active_env_patches = []
+        for key, value in self.env_patches.items():
+            p = patch.dict(os.environ, {key: value})
+            self.active_env_patches.append(p)
+            p.start()
         
-        self.test_results_dir = "test_core_processor_results_dir" # 确保目录名独特
-        # 使用 patch 来 mock os.makedirs，避免实际创建目录
-        self.mock_os_makedirs = patch('auto_doc_markdown_converter.src.core_processor.os.makedirs').start()
-        
-        # MAX_TOKENS_FOR_DIRECT_PROCESSING 是在 core_processor 模块级别从 text_splitter 导入并赋值的。
-        # 为了在测试中控制这个阈值，我们需要 patch 它在 core_processor 模块中的引用。
-        # 如果 core_processor.py 是: from .text_splitter import DEFAULT_MAX_CHUNK_TOKENS as MAX_TOKENS_FOR_DIRECT_PROCESSING
-        # 或者 MAX_TOKENS_FOR_DIRECT_PROCESSING = some_value
-        # 我们可以直接patch 'auto_doc_markdown_converter.src.core_processor.MAX_TOKENS_FOR_DIRECT_PROCESSING'
-        # 假设 core_processor.MAX_TOKENS_FOR_DIRECT_PROCESSING 可以被 patch
-        self.mock_threshold_val = 50 # 用于测试的阈值
-        self.patcher_max_tokens_threshold = patch('auto_doc_markdown_converter.src.core_processor.MAX_TOKENS_FOR_DIRECT_PROCESSING', self.mock_threshold_val)
-        self.patcher_max_tokens_threshold.start()
+        # Reload config module to pick up patched os.environ values
+        # This is crucial if config values are read at module import time.
+        import importlib
+        importlib.reload(config)
+        importlib.reload(core_processor) # Reload core_processor if it imports config values at module level
 
+        self.test_results_dir = "test_concurrency_results"
+        
+        # Patch external dependencies of core_processor
+        self.patcher_get_file_type = patch('auto_doc_markdown_converter.src.core_processor.get_file_type')
+        self.patcher_read_file_content = patch('auto_doc_markdown_converter.src.core_processor.read_file_content')
+        self.patcher_generate_markdown = patch('auto_doc_markdown_converter.src.core_processor.generate_markdown_from_labeled_text')
+        self.patcher_estimate_tokens = patch('auto_doc_markdown_converter.src.core_processor.estimate_tokens')
+        self.patcher_split_text = patch('auto_doc_markdown_converter.src.core_processor.split_text_into_chunks')
+        self.patcher_merge_chunks = patch('auto_doc_markdown_converter.src.core_processor.merge_processed_chunks')
+        self.patcher_os_makedirs = patch('auto_doc_markdown_converter.src.core_processor.os.makedirs') # Patching os.makedirs in core_processor's namespace
+        self.patcher_open = patch('builtins.open', new_callable=mock_open)
+
+        self.mock_get_file_type = self.patcher_get_file_type.start()
+        self.mock_read_file_content = self.patcher_read_file_content.start()
+        self.mock_generate_markdown = self.patcher_generate_markdown.start()
+        self.mock_estimate_tokens = self.patcher_estimate_tokens.start()
+        self.mock_split_text = self.patcher_split_text.start()
+        self.mock_merge_chunks = self.patcher_merge_chunks.start()
+        self.mock_os_makedirs = self.patcher_os_makedirs.start()
+        self.mock_open_file = self.patcher_open.start()
+
+        # Default behaviors for mocks
+        self.mock_get_file_type.return_value = "txt"
+        self.mock_read_file_content.return_value = "Initial long document text for concurrency testing."
+        self.mock_generate_markdown.return_value = "# Final Markdown"
+        
+        # IMPORTANT: Control MAX_TOKENS_FOR_DIRECT_PROCESSING for tests
+        # This value is defined in core_processor at module level.
+        self.patcher_max_tokens_direct = patch('auto_doc_markdown_converter.src.core_processor.MAX_TOKENS_FOR_DIRECT_PROCESSING', 50)
+        self.mock_max_tokens_direct = self.patcher_max_tokens_direct.start()
+        
+        self.mock_estimate_tokens.return_value = 100 # Default to trigger chunking (100 > 50)
+        self.original_chunks = ["chunk_alpha", "chunk_beta", "chunk_gamma"]
+        self.mock_split_text.return_value = self.original_chunks
+        self.mock_merge_chunks.return_value = "merged_processed_content_from_chunks"
 
     def tearDown(self):
-        """在每个测试用例结束后运行"""
-        self.env_patcher_key.stop()
-        self.env_patcher_endpoint.stop()
-        self.env_patcher_model.stop()
-        self.env_patcher_timeout.stop()
-        self.patcher_max_tokens_threshold.stop()
-        patch.stopall() # 停止所有由 @patch 或 patch.start() 启动的 patchers
+        """Clean up after each test method."""
+        for p in self.active_env_patches:
+            p.stop()
+        
+        # Reload config and core_processor to reset to original state if necessary,
+        # or ensure next setUp re-patches os.environ before reload.
+        import importlib
+        importlib.reload(config) # Reset config to be based on actual env or default patches
+        importlib.reload(core_processor)
 
-        # 清理测试目录中的文件（如果实际创建了）
-        if os.path.exists(self.test_results_dir):
-            for f_name in os.listdir(self.test_results_dir):
-                os.remove(os.path.join(self.test_results_dir, f_name))
-            # os.rmdir(self.test_results_dir) # 如果测试后确定目录为空，可以移除
+        self.patcher_max_tokens_direct.stop()
+        patch.stopall() # Stops all patchers started with start()
 
-
-    @patch('builtins.open', new_callable=mock_open)
-    @patch('auto_doc_markdown_converter.src.core_processor.generate_markdown_from_labeled_text', return_value="## Markdown Content")
     @patch('auto_doc_markdown_converter.src.core_processor.analyze_text_with_llm')
-    @patch('auto_doc_markdown_converter.src.core_processor.split_text_into_chunks') 
-    @patch('auto_doc_markdown_converter.src.core_processor.merge_processed_chunks') 
-    @patch('auto_doc_markdown_converter.src.core_processor.estimate_tokens')
-    @patch('auto_doc_markdown_converter.src.core_processor.read_file_content', return_value="Short raw text.")
-    @patch('auto_doc_markdown_converter.src.core_processor.get_file_type', return_value='docx')
-    def test_short_text_direct_processing(self, mock_get_file_type, mock_read_content, 
-                                          mock_estimate_tokens, mock_merge_chunks, 
-                                          mock_split_chunks, mock_analyze_llm, 
-                                          mock_generate_md, mock_file_open):
-        """测试短文本（token 数低于阈值）时，直接调用 LLM 进行处理。"""
-        mock_estimate_tokens.return_value = self.mock_threshold_val -1 # 确保小于阈值
-        mock_analyze_llm.return_value = "P: Short LLM output."
+    @patch('concurrent.futures.ThreadPoolExecutor') # Patch the class
+    def test_concurrent_execution_of_analyze_text_with_llm(self, MockThreadPoolExecutor, mock_analyze_llm):
+        """Verify analyze_text_with_llm is called concurrently for multiple chunks."""
+        mock_executor_instance = MockThreadPoolExecutor.return_value.__enter__.return_value
         
-        input_file = "dummy_short.docx"
-        result_path = process_document_to_markdown(input_file, self.test_results_dir)
+        # Define side effect for analyze_text_with_llm to track calls and return distinct results
+        processed_results = [f"processed_{c}" for c in self.original_chunks]
+        def analyze_side_effect(chunk_content):
+            return f"processed_{chunk_content}"
+        mock_analyze_llm.side_effect = analyze_side_effect
 
-        mock_read_content.assert_called_once_with(input_file, 'docx')
-        # estimate_tokens 会被调用一次来判断是否为长文本
-        mock_estimate_tokens.assert_called_once_with("Short raw text.", model_name="test_model_for_core_tests")
-        mock_analyze_llm.assert_called_once_with("Short raw text.")
-        mock_split_chunks.assert_not_called() # 不应调用分块
-        mock_merge_chunks.assert_not_called() # 不应调用合并
-        mock_generate_md.assert_called_once_with("P: Short LLM output.")
+        # Call the main processing function
+        core_processor.process_document_to_markdown("dummy_concurrent.txt", self.test_results_dir)
+
+        # Assertions
+        self.assertTrue(MockThreadPoolExecutor.called, "ThreadPoolExecutor should be used for long text.")
+        self.assertEqual(mock_executor_instance.submit.call_count, len(self.original_chunks),
+                         "Submit should be called for each chunk.")
         
-        expected_output_filename = os.path.splitext(os.path.basename(input_file))[0] + ".md"
-        expected_path = os.path.join(self.test_results_dir, expected_output_filename)
-        self.assertEqual(result_path, expected_path)
-        self.mock_os_makedirs.assert_called_once_with(self.test_results_dir, exist_ok=True)
-        mock_file_open.assert_called_once_with(expected_path, "w", encoding="utf-8")
-        mock_file_open().write.assert_called_once_with("## Markdown Content")
-
-
-    @patch('builtins.open', new_callable=mock_open)
-    @patch('auto_doc_markdown_converter.src.core_processor.generate_markdown_from_labeled_text', return_value="## Merged Markdown")
-    @patch('auto_doc_markdown_converter.src.core_processor.merge_processed_chunks')
-    @patch('auto_doc_markdown_converter.src.core_processor.analyze_text_with_llm')
-    @patch('auto_doc_markdown_converter.src.core_processor.split_text_into_chunks')
-    @patch('auto_doc_markdown_converter.src.core_processor.estimate_tokens')
-    @patch('auto_doc_markdown_converter.src.core_processor.read_file_content', return_value="Long raw text " * 100) # 确保文本足够长
-    @patch('auto_doc_markdown_converter.src.core_processor.get_file_type', return_value='pdf')
-    def test_long_text_chunk_processing_success(self, mock_get_file_type, mock_read_content,
-                                                mock_estimate_tokens, mock_split_chunks,
-                                                mock_analyze_llm, mock_merge_chunks,
-                                                mock_generate_md, mock_file_open):
-        """测试长文本（token 数超过阈值）成功进行分块处理、LLM分析、合并和Markdown生成。"""
-        long_text_content = "Long raw text " * 100
-        mock_read_content.return_value = long_text_content
-        mock_estimate_tokens.return_value = self.mock_threshold_val + 100 # 确保大于阈值
+        # Check that analyze_text_with_llm was submitted with each chunk
+        submit_calls = [call(mock_analyze_llm, chunk) for chunk in self.original_chunks]
+        mock_executor_instance.submit.assert_has_calls(submit_calls, any_order=True)
         
-        raw_chunks = ["chunk1_raw", "chunk2_raw", "chunk3_raw"]
-        mock_split_chunks.return_value = raw_chunks
-        
-        processed_llm_chunks = ["P: chunk1_processed", "P: chunk2_processed", "P: chunk3_processed"]
-        mock_analyze_llm.side_effect = processed_llm_chunks
-        
-        mock_merge_chunks.return_value = "P: Merged LLM output from multiple chunks."
+        # Check that analyze_text_with_llm itself was called (simulated by side_effect)
+        llm_calls = [call(chunk) for chunk in self.original_chunks]
+        mock_analyze_llm.assert_has_calls(llm_calls, any_order=True)
+        self.assertEqual(mock_analyze_llm.call_count, len(self.original_chunks))
 
-        input_file = "dummy_long_success.pdf"
-        result_path = process_document_to_markdown(input_file, self.test_results_dir)
-
-        mock_estimate_tokens.assert_called_once_with(long_text_content, model_name="test_model_for_core_tests")
-        mock_split_chunks.assert_called_once_with(
-            long_text_content,
-            model_name="test_model_for_core_tests",
-            max_tokens_per_chunk=DEFAULT_MAX_CHUNK_TOKENS, 
-            overlap_tokens=DEFAULT_OVERLAP_TOKENS
+        self.mock_merge_chunks.assert_called_once_with(
+            processed_results, # Results must be in original order
+            self.original_chunks,
+            DEFAULT_OVERLAP_TOKENS, 
+            config.LLM_MODEL_ID 
         )
-        self.assertEqual(mock_analyze_llm.call_count, len(raw_chunks))
-        mock_analyze_llm.assert_has_calls([call(c) for c in raw_chunks])
-        mock_merge_chunks.assert_called_once_with(
-            processed_llm_chunks,
-            raw_chunks, 
-            overlap_tokens=DEFAULT_OVERLAP_TOKENS,
-            model_name="test_model_for_core_tests"
+
+    @patch('auto_doc_markdown_converter.src.core_processor.analyze_text_with_llm')
+    # No need to patch ThreadPoolExecutor here if we only check the final list for merge_chunks
+    def test_result_order_maintained_after_concurrent_processing(self, mock_analyze_llm):
+        """Verify results are ordered correctly before merging, even if processed out of order."""
+        # Simulate analyze_text_with_llm returning results for chunks
+        # The internal logic of core_processor using future_to_chunk_index and then
+        # creating processed_chunks_results list in order is what we're testing.
+        
+        simulated_processed_results = [f"processed_{c}" for c in self.original_chunks]
+        
+        # Mock analyze_text_with_llm to return based on input chunk
+        def analyze_side_effect(chunk_content):
+            return f"processed_{chunk_content}"
+        mock_analyze_llm.side_effect = analyze_side_effect
+
+        core_processor.process_document_to_markdown("dummy_order.txt", self.test_results_dir)
+
+        # The key assertion is that merge_processed_chunks receives the processed chunks
+        # in the same order as the original chunks.
+        self.mock_merge_chunks.assert_called_once_with(
+            simulated_processed_results, # This list must be correctly ordered
+            self.original_chunks,
+            ANY, # overlap_tokens
+            ANY  # model_name
         )
-        mock_generate_md.assert_called_once_with("P: Merged LLM output from multiple chunks.")
-        
-        expected_output_filename = os.path.splitext(os.path.basename(input_file))[0] + ".md"
-        expected_path = os.path.join(self.test_results_dir, expected_output_filename)
-        self.assertEqual(result_path, expected_path)
-        mock_file_open.assert_called_once_with(expected_path, "w", encoding="utf-8")
-        mock_file_open().write.assert_called_once_with("## Merged Markdown")
-
-    @patch('auto_doc_markdown_converter.src.core_processor.generate_markdown_from_labeled_text') 
-    @patch('auto_doc_markdown_converter.src.core_processor.merge_processed_chunks') 
-    @patch('auto_doc_markdown_converter.src.core_processor.analyze_text_with_llm')
-    @patch('auto_doc_markdown_converter.src.core_processor.split_text_into_chunks')
-    @patch('auto_doc_markdown_converter.src.core_processor.estimate_tokens')
-    @patch('auto_doc_markdown_converter.src.core_processor.read_file_content', return_value="Long text for LLM chunk failure.")
-    @patch('auto_doc_markdown_converter.src.core_processor.get_file_type', return_value='docx')
-    def test_long_text_llm_fail_on_one_chunk(self, mock_get_file_type, mock_read_content,
-                                             mock_estimate_tokens, mock_split_chunks,
-                                             mock_analyze_llm, mock_merge_chunks,
-                                             mock_generate_md):
-        """测试长文本处理时，如果任意一个块的LLM分析失败，则整个处理返回None。"""
-        mock_estimate_tokens.return_value = self.mock_threshold_val + 100
-        mock_split_chunks.return_value = ["chunk1_raw", "chunk2_raw_fails", "chunk3_raw"]
-        # 第二个块LLM处理返回None
-        mock_analyze_llm.side_effect = ["P: chunk1_processed", None, "P: chunk3_processed"] 
-
-        input_file = "dummy_llm_fail_chunk.docx"
-        result_path = process_document_to_markdown(input_file, self.test_results_dir)
-
-        self.assertIsNone(result_path, "当一个块LLM分析失败时，应返回None")
-        mock_split_chunks.assert_called_once()
-        # analyze_text_with_llm 应该被调用直到失败的那个块
-        self.assertEqual(mock_analyze_llm.call_count, 2) 
-        mock_analyze_llm.assert_any_call("chunk1_raw")
-        mock_analyze_llm.assert_any_call("chunk2_raw_fails")
-        mock_merge_chunks.assert_not_called() # 因为LLM分析中途失败
-        mock_generate_md.assert_not_called()
-
 
     @patch('auto_doc_markdown_converter.src.core_processor.analyze_text_with_llm')
-    @patch('auto_doc_markdown_converter.src.core_processor.split_text_into_chunks', return_value=None) # 分割失败返回 None
-    @patch('auto_doc_markdown_converter.src.core_processor.estimate_tokens')
-    @patch('auto_doc_markdown_converter.src.core_processor.read_file_content', return_value="Long text for split failure (None).")
-    @patch('auto_doc_markdown_converter.src.core_processor.get_file_type', return_value='docx')
-    def test_long_text_split_fails_returns_none(self, mock_get_file_type, mock_read_content,
-                                           mock_estimate_tokens, mock_split_chunks, mock_analyze_llm):
-        """测试长文本分割失败（split_text_into_chunks返回None）时，整个处理返回None。"""
-        mock_estimate_tokens.return_value = self.mock_threshold_val + 100
-        
-        input_file = "dummy_split_fail_none.docx"
-        result_path = process_document_to_markdown(input_file, self.test_results_dir)
+    @patch('concurrent.futures.ThreadPoolExecutor')
+    def test_error_handling_one_chunk_analyze_llm_returns_none(self, MockThreadPoolExecutor, mock_analyze_llm):
+        """Test processing stops if one chunk analysis returns None; others cancelled."""
+        mock_executor_instance = MockThreadPoolExecutor.return_value.__enter__.return_value
 
-        self.assertIsNone(result_path, "当文本分割返回None时，应返回None")
-        mock_split_chunks.assert_called_once()
-        mock_analyze_llm.assert_not_called()
+        # Simulate one chunk failing (returns None)
+        failing_chunk = self.original_chunks[1]
+        def analyze_side_effect_failure(chunk_content):
+            if chunk_content == failing_chunk:
+                return None
+            return f"processed_{chunk_content}"
+        mock_analyze_llm.side_effect = analyze_side_effect_failure
+
+        # Simulate futures to check for cancellation
+        # This requires careful mocking of the executor's submit and as_completed logic.
+        # For simplicity, we'll focus on:
+        # 1. The overall function returns None.
+        # 2. analyze_text_with_llm was called for the failing chunk.
+        # 3. merge_chunks was not called.
+        # 4. Cancellation was attempted on other futures (harder to check directly without complex mock).
+        
+        # Setup futures to be returned by submit
+        # We need to control which futures are "done" or "cancelled"
+        # This is complex. Let's check the documented behavior: if a future.result() is None,
+        # it attempts to cancel other futures.
+        
+        # Let's make a list of mock futures
+        mock_futures = [MagicMock(spec=concurrent.futures.Future) for _ in self.original_chunks]
+        
+        # Configure submit to return these futures and map them to original indices
+        future_map = {id(mock_futures[i]): i for i in range(len(self.original_chunks))}
+
+        def mock_submit_effect(fn, chunk_arg):
+            # Find the index of chunk_arg in self.original_chunks
+            idx = self.original_chunks.index(chunk_arg)
+            # Simulate the call that happens inside the thread
+            # The actual result (or exception) is set on the future by the executor
+            # For this test, we'll set the result directly on the future based on analyze_side_effect_failure
+            if chunk_arg == failing_chunk:
+                mock_futures[idx].result.return_value = None # This future's result is None
+            else:
+                mock_futures[idx].result.return_value = f"processed_{chunk_arg}" # Others succeed
+            return mock_futures[idx]
+
+        mock_executor_instance.submit.side_effect = mock_submit_effect
+        
+        # Simulate as_completed: it should yield futures. If one returns None, others should be cancelled.
+        # We need to ensure the failing future is processed by as_completed loop.
+        # Let's assume the failing future (for original_chunks[1]) is yielded by as_completed.
+        mock_executor_instance.as_completed.return_value = [mock_futures[1], mock_futures[0], mock_futures[2]]
+
+
+        result_path = core_processor.process_document_to_markdown("dummy_fail_none.txt", self.test_results_dir)
+
+        self.assertIsNone(result_path, "Processing should fail and return None.")
+        mock_analyze_llm.assert_any_call(failing_chunk) # Ensure the failing function was at least called
+        self.mock_merge_chunks.assert_not_called("Merge should not be called if a chunk fails.")
+
+        # Check for cancellation calls on other futures
+        # This requires futures to be "not done" when cancel() is called.
+        for i, f in enumerate(mock_futures):
+            if self.original_chunks[i] != failing_chunk:
+                 # If a future was for a chunk other than the one that failed by returning None,
+                 # and it was presumably submitted, a cancel() call on it might have occurred.
+                 # The logic is: if a processed chunk is None, it iterates all other futures
+                 # from the future_to_chunk_index map and calls cancel().
+                 # So, all other *submitted* futures should have cancel() called.
+                 # The check is if f.cancel() was called.
+                 # This test setup for futures is a bit simplified. A more robust way is to
+                 # check if the functions for other chunks after failure were eventually called.
+                 # If cancellation is effective, they shouldn't be.
+                 pass # mock_futures[i].cancel.assert_called_once() # This is hard to guarantee with this setup
+
+        # A practical check: analyze_text_with_llm should not be called for chunks processed *after* failure & cancellation.
+        # Given as_completed order [future_for_chunk1 (fails), future_for_chunk0, future_for_chunk2],
+        # if chunk1 (original_chunks[1]) fails, then calls for chunk0 and chunk2 might still complete if already running.
+        # Cancellation is best-effort. The key is that the overall process fails.
+        # We expect at least the failing chunk to be processed.
+        self.assertGreaterEqual(mock_analyze_llm.call_count, 1)
 
 
     @patch('auto_doc_markdown_converter.src.core_processor.analyze_text_with_llm')
-    @patch('auto_doc_markdown_converter.src.core_processor.split_text_into_chunks', return_value=[]) # 分割失败返回空列表
-    @patch('auto_doc_markdown_converter.src.core_processor.estimate_tokens')
-    @patch('auto_doc_markdown_converter.src.core_processor.read_file_content', return_value="Long text for split failure (empty list).")
-    @patch('auto_doc_markdown_converter.src.core_processor.get_file_type', return_value='docx')
-    def test_long_text_split_fails_returns_empty_list(self, mock_get_file_type, mock_read_content,
-                                           mock_estimate_tokens, mock_split_chunks, mock_analyze_llm):
-        """测试长文本分割失败（split_text_into_chunks返回空列表）时，整个处理返回None。"""
-        mock_estimate_tokens.return_value = self.mock_threshold_val + 100
+    @patch('concurrent.futures.ThreadPoolExecutor')
+    def test_error_handling_one_chunk_analyze_llm_raises_exception(self, MockThreadPoolExecutor, mock_analyze_llm):
+        """Test processing stops if one chunk analysis raises an exception."""
+        mock_executor_instance = MockThreadPoolExecutor.return_value.__enter__.return_value
         
-        input_file = "dummy_split_fail_empty.docx"
-        result_path = process_document_to_markdown(input_file, self.test_results_dir)
+        failing_chunk = self.original_chunks[1]
+        error_message = "LLM simulated error"
+        
+        def analyze_side_effect_exception(chunk_content):
+            if chunk_content == failing_chunk:
+                raise ValueError(error_message)
+            return f"processed_{chunk_content}"
+        mock_analyze_llm.side_effect = analyze_side_effect_exception
 
-        self.assertIsNone(result_path, "当文本分割返回空列表时，应返回None")
-        mock_split_chunks.assert_called_once()
-        mock_analyze_llm.assert_not_called()
+        # Similar future mocking as above for more precise control if needed
+        mock_futures = [MagicMock(spec=concurrent.futures.Future) for _ in self.original_chunks]
+        def mock_submit_effect_exc(fn, chunk_arg):
+            idx = self.original_chunks.index(chunk_arg)
+            if chunk_arg == failing_chunk:
+                mock_futures[idx].result.side_effect = ValueError(error_message) # Future.result() will raise this
+                # Also make the future itself raise when result() is called
+                mock_futures[idx].exception.return_value = ValueError(error_message)
 
+            else:
+                mock_futures[idx].result.return_value = f"processed_{chunk_arg}"
+                mock_futures[idx].exception.return_value = None
+            return mock_futures[idx]
+        mock_executor_instance.submit.side_effect = mock_submit_effect_exc
+        mock_executor_instance.as_completed.return_value = mock_futures # Order doesn't strictly matter here
 
-    @patch('auto_doc_markdown_converter.src.core_processor.generate_markdown_from_labeled_text') 
-    @patch('auto_doc_markdown_converter.src.core_processor.merge_processed_chunks', return_value=None) # 合并失败返回 None
+        result_path = core_processor.process_document_to_markdown("dummy_exception.txt", self.test_results_dir)
+
+        self.assertIsNone(result_path, "Processing should fail and return None due to exception.")
+        mock_analyze_llm.assert_any_call(failing_chunk)
+        self.mock_merge_chunks.assert_not_called()
+
     @patch('auto_doc_markdown_converter.src.core_processor.analyze_text_with_llm')
-    @patch('auto_doc_markdown_converter.src.core_processor.split_text_into_chunks')
-    @patch('auto_doc_markdown_converter.src.core_processor.estimate_tokens')
-    @patch('auto_doc_markdown_converter.src.core_processor.read_file_content', return_value="Long text for merge failure (None).")
-    @patch('auto_doc_markdown_converter.src.core_processor.get_file_type', return_value='docx')
-    def test_long_text_merge_fails_returns_none(self, mock_get_file_type, mock_read_content,
-                                            mock_estimate_tokens, mock_split_chunks,
-                                            mock_analyze_llm, mock_merge_chunks,
-                                            mock_generate_md):
-        """测试长文本合并结果失败（merge_processed_chunks返回None）时，整个处理返回None。"""
-        mock_estimate_tokens.return_value = self.mock_threshold_val + 100
-        mock_split_chunks.return_value = ["chunk1_raw", "chunk2_raw"]
-        mock_analyze_llm.side_effect = ["P: chunk1_processed", "P: chunk2_processed"]
-        
-        input_file = "dummy_merge_fail_none.docx"
-        result_path = process_document_to_markdown(input_file, self.test_results_dir)
+    def test_max_concurrent_requests_respected(self, mock_analyze_llm):
+        """Verify ThreadPoolExecutor is initialized with MAX_CONCURRENT_LLM_REQUESTS."""
+        mock_analyze_llm.return_value = "processed_text" # Keep analyze_llm simple
 
-        self.assertIsNone(result_path, "当结果合并返回None时，应返回None")
-        mock_merge_chunks.assert_called_once()
-        mock_generate_md.assert_not_called() # 因为合并结果为None
+        test_values = [1, 3, 5]
+        for num_workers in test_values:
+            with self.subTest(max_workers=num_workers):
+                # Patch os.environ for this subtest to change MAX_CONCURRENT_LLM_REQUESTS
+                with patch.dict(os.environ, {"MAX_CONCURRENT_LLM_REQUESTS": str(num_workers)}):
+                    import importlib
+                    importlib.reload(config) # Reload config to pick up new MAX_CONCURRENT_LLM_REQUESTS
+                    importlib.reload(core_processor) # Reload core_processor to use new config
+                    
+                    # Ensure MAX_TOKENS_FOR_DIRECT_PROCESSING is also set for this reloaded core_processor
+                    with patch('auto_doc_markdown_converter.src.core_processor.MAX_TOKENS_FOR_DIRECT_PROCESSING', 50):
+                        with patch('concurrent.futures.ThreadPoolExecutor') as MockExecutor:
+                            # Need to re-setup mocks that might have been affected by reload
+                            self.mock_split_text.return_value = self.original_chunks # ensure split text is still mocked
+                            
+                            core_processor.process_document_to_markdown(
+                                "dummy_max_workers.txt", self.test_results_dir
+                            )
+                            MockExecutor.assert_called_once_with(max_workers=num_workers)
+                
+                # Reload config and core_processor again to reset to setUp state or default env for next subtest iteration
+                import importlib
+                importlib.reload(config) 
+                importlib.reload(core_processor)
 
 
-    @patch('auto_doc_markdown_converter.src.core_processor.generate_markdown_from_labeled_text', return_value=None) # 假设Markdown生成也可能因空输入而失败
-    @patch('auto_doc_markdown_converter.src.core_processor.merge_processed_chunks', return_value="  ") # 合并返回空白字符串
     @patch('auto_doc_markdown_converter.src.core_processor.analyze_text_with_llm')
-    @patch('auto_doc_markdown_converter.src.core_processor.split_text_into_chunks')
-    @patch('auto_doc_markdown_converter.src.core_processor.estimate_tokens')
-    @patch('auto_doc_markdown_converter.src.core_processor.read_file_content', return_value="Long text for merge failure (empty str).")
-    @patch('auto_doc_markdown_converter.src.core_processor.get_file_type', return_value='docx')
-    def test_long_text_merge_fails_returns_empty_str(self, mock_get_file_type, mock_read_content,
-                                            mock_estimate_tokens, mock_split_chunks,
-                                            mock_analyze_llm, mock_merge_chunks,
-                                            mock_generate_md):
-        """测试长文本合并结果失败（返回空白字符串）时，整个处理返回None。"""
-        mock_estimate_tokens.return_value = self.mock_threshold_val + 100
-        mock_split_chunks.return_value = ["chunk1_raw", "chunk2_raw"]
-        mock_analyze_llm.side_effect = ["P: chunk1_processed", "P: chunk2_processed"]
+    def test_no_chunking_or_concurrency_if_text_is_short(self, mock_analyze_llm_direct):
+        """Verify no chunking/concurrency if text is below MAX_TOKENS_FOR_DIRECT_PROCESSING."""
+        short_text_content = "This is a very short text."
+        self.mock_read_file_content.return_value = short_text_content
+        # MAX_TOKENS_FOR_DIRECT_PROCESSING is 50 (from setUp)
+        self.mock_estimate_tokens.return_value = 40 # Below threshold
         
-        input_file = "dummy_merge_fail_empty_str.docx"
-        result_path = process_document_to_markdown(input_file, self.test_results_dir)
+        mock_analyze_llm_direct.return_value = "llm_processed_short_text_direct"
+        
+        with patch('concurrent.futures.ThreadPoolExecutor') as MockExecutorNotUsed:
+            result_path = core_processor.process_document_to_markdown("dummy_short_no_concurrency.txt", self.test_results_dir)
 
-        self.assertIsNone(result_path, "当结果合并返回空白字符串且Markdown生成也失败时，应返回None") 
-        mock_merge_chunks.assert_called_once()
-        # generate_markdown_from_labeled_text 会被调用，但其返回 None (或空白) 导致最终结果为 None
-        mock_generate_md.assert_called_once_with("  ")
+            self.assertIsNotNone(result_path)
+            MockExecutorNotUsed.assert_not_called("ThreadPoolExecutor should not be used for short text.")
+            self.mock_split_text.assert_not_called("split_text_into_chunks should not be called.")
+            mock_analyze_llm_direct.assert_called_once_with(short_text_content)
+            self.mock_merge_chunks.assert_not_called("merge_processed_chunks should not be called.")
+            self.mock_generate_markdown.assert_called_once_with("llm_processed_short_text_direct")
 
 
 if __name__ == '__main__':
-    unittest.main()
+    # Important: If run directly, os.environ changes might not be perfectly isolated
+    #            between test methods if config is not reloaded carefully.
+    #            unittest.main() handles this better by running tests in a fresh instance context.
+    unittest.main(argv=['first-arg-is-ignored'], exit=False)

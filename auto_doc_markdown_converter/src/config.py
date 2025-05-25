@@ -111,3 +111,16 @@ except ValueError:
     logger.warning(f"环境变量 LLM_API_CALL_TIMEOUT 的值 '{LLM_API_CALL_TIMEOUT_STR}' 不是有效的整数，将使用默认值 300 秒。")
     LLM_API_CALL_TIMEOUT = 300
 logger.info(f"LLM API 调用超时时间配置为: {LLM_API_CALL_TIMEOUT} 秒")
+
+# 最大并发 LLM 请求数
+# 从环境变量 MAX_CONCURRENT_LLM_REQUESTS 读取，如果未设置，则默认为 5
+MAX_CONCURRENT_LLM_REQUESTS_STR = os.environ.get("MAX_CONCURRENT_LLM_REQUESTS", "5")
+try:
+    MAX_CONCURRENT_LLM_REQUESTS = int(MAX_CONCURRENT_LLM_REQUESTS_STR)
+    if MAX_CONCURRENT_LLM_REQUESTS <= 0:
+        logger.warning(f"环境变量 MAX_CONCURRENT_LLM_REQUESTS 的值 '{MAX_CONCURRENT_LLM_REQUESTS_STR}' 不是一个正整数，将使用默认值 5。")
+        MAX_CONCURRENT_LLM_REQUESTS = 5
+except ValueError:
+    logger.warning(f"环境变量 MAX_CONCURRENT_LLM_REQUESTS 的值 '{MAX_CONCURRENT_LLM_REQUESTS_STR}' 不是有效的整数，将使用默认值 5。")
+    MAX_CONCURRENT_LLM_REQUESTS = 5
+logger.info(f"最大并发 LLM 请求数配置为: {MAX_CONCURRENT_LLM_REQUESTS}")

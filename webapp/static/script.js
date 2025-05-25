@@ -40,12 +40,26 @@ document.addEventListener('DOMContentLoaded', function() {
                 return response.text(); // 获取文本内容
             })
             .then(markdownText => {
-                // 使用 <pre> 标签来保留 Markdown 格式和换行
-                const preElement = document.createElement('pre');
-                preElement.className = 'markdown-preview';
-                preElement.textContent = markdownText;
-                previewContainer.innerHTML = ''; // 清空 "正在加载预览..."
-                previewContainer.appendChild(preElement);
+                // 新的 Markdown 到 HTML 转换逻辑
+                if (typeof marked === 'undefined') {
+                    console.error('Marked.js 库未加载。');
+                    previewContainer.innerHTML = '<p class="error-message">Markdown 预览库加载失败。</p>';
+                    return;
+                }
+                try {
+                    const htmlContent = marked.parse(markdownText); // 使用 marked.parse()
+                    previewContainer.innerHTML = ''; // 清空 "正在加载预览..."
+                    // 为了安全起见，如果marked.parse返回的是不可信内容且需要进一步处理，
+                    // 可能需要在这里进行HTML净化 (DOMPurify)，但对于从自己服务器获取的 .md 文件内容，
+                    // 通常认为是可信的。
+                    const previewContentDiv = document.createElement('div');
+                    previewContentDiv.className = 'markdown-preview'; // 可以保留这个类名用于样式
+                    previewContentDiv.innerHTML = htmlContent;
+                    previewContainer.appendChild(previewContentDiv);
+                } catch (e) {
+                    console.error('Markdown 解析错误:', e);
+                    previewContainer.innerHTML = `<p class="error-message">Markdown 内容解析时发生错误: ${escapeHTML(e.message)}</p>`;
+                }
             })
             .catch(error => {
                 console.error('获取预览失败:', error);
