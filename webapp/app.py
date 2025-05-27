@@ -158,6 +158,41 @@ def download_file(filename):
 # Placeholder for mammoth import, will be attempted later
 # import mammoth 
 
+@app.route('/preview_pdf/<path:filename>')
+def preview_pdf_file(filename):
+    """
+    提供原始上传的 PDF 文件以供预览。
+    从 UPLOAD_FOLDER 安全地发送指定的文件。
+    """
+    logger.info(f"收到 PDF 文件预览请求: '{filename}'")
+    upload_folder = app.config['UPLOAD_FOLDER']
+    
+    # 虽然 send_from_directory 通常是安全的，但对文件名进行额外检查不是坏事。
+    # secure_filename 会处理掉路径相关的字符，确保 filename 只是一个文件名。
+    # 但如果原始保存的文件名本身包含特殊字符，而 secure_filename 清理了它们，
+    # 那么这里用 secure_filename(filename) 可能会导致找不到文件。
+    # 假设上传时保存的文件名已经是 secure_filename 处理过的。
+    
+    # 检查文件是否存在于上传目录
+    file_path = os.path.join(upload_folder, filename)
+    if not os.path.exists(file_path):
+        logger.error(f"请求预览的 PDF 文件未找到: {file_path}")
+        return jsonify({"error": "原始 PDF 文件未找到。"}), 404
+
+    if not filename.lower().endswith('.pdf'):
+        logger.warning(f"请求预览的文件不是 PDF: {filename}")
+        return jsonify({"error": "请求的文件不是 PDF 格式。"}), 400
+        
+    try:
+        logger.debug(f"尝试从目录 '{upload_folder}' 发送 PDF 文件 '{filename}' 进行预览。")
+        return send_from_directory(upload_folder, filename, mimetype='application/pdf')
+    except FileNotFoundError: # Double check, though os.path.exists should cover this
+        logger.error(f"请求预览的 PDF 文件在尝试发送时未找到: {file_path}")
+        return jsonify({"error": "文件未找到"}), 404
+    except Exception as e:
+        logger.error(f"预览 PDF 文件 '{filename}' 时发生服务器内部错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误，无法提供 PDF 文件预览。"}), 500
+
 @app.route('/preview_docx/<path:filename>')
 def preview_docx_file(filename):
     # filename is derived from user input (part of URL), so ensure it's secured

@@ -65,22 +65,38 @@ def process_document_to_markdown(input_filepath: str, results_dir: str) -> Optio
 
     # 3. 读取文件内容
     logger.debug(f"正在从 '{input_filepath}' (类型: {file_type}) 读取内容...")
+    raw_text_content: Optional[str] = None
+    extracted_data: Optional[dict] = None # To store image/table data
     try:
-        # Pass results_dir to read_file_content, especially for DOCX image extraction
-        raw_text = read_file_content(input_filepath, file_type, results_dir)
-        if raw_text is None:
-            # read_file_content 内部已记录具体错误 (例如，文件为空或提取失败)
-            logger.error(f"未能从文件 '{input_filepath}' 读取到有效内容。")
+        # read_file_content now returns a tuple (text_content, extracted_data_dict) or None
+        content_tuple = read_file_content(input_filepath, file_type, results_dir)
+        if content_tuple is None:
+            # read_file_content 内部已记录具体错误
+            logger.error(f"未能从文件 '{input_filepath}' 读取到有效内容和提取数据。")
             return None
-        logger.debug(f"成功从 '{input_filepath}' 读取内容 (前100字符预览: '{raw_text[:100].strip()}...')")
+        
+        raw_text_content, extracted_data = content_tuple
+        
+        if raw_text_content is None: # Should ideally not happen if content_tuple is not None
+            logger.error(f"从 '{input_filepath}' 读取的文本内容为 None，尽管提取函数未返回 None。")
+            return None
+        if extracted_data is None: # Should ideally not happen
+            logger.warning(f"从 '{input_filepath}' 提取的额外数据 (图片/表格) 为 None。继续处理文本。")
+            extracted_data = {} # Ensure extracted_data is a dict
+
+        logger.debug(f"成功从 '{input_filepath}' 读取内容。文本预览 (前100字符): '{raw_text_content[:100].strip()}...'")
+        logger.debug(f"提取的额外数据 (图片/表格占位符数量): {len(extracted_data)}")
+
     except Exception as e:
         logger.error(f"读取文件 '{input_filepath}' 内容时发生意外的严重错误: {e}", exc_info=True)
         return None
 
     # 4. LLM 处理 (根据文本长度选择直接处理或分块处理)
+    # LLM processing should only work on the raw_text_content part
     llm_output: Optional[str] = None # 初始化 llm_output
     try:
-        num_estimated_tokens = estimate_tokens(raw_text, model_name=model_name_for_splitting)
+        # Use raw_text_content for token estimation and LLM processing
+        num_estimated_tokens = estimate_tokens(raw_text_content, model_name=model_name_for_splitting)
         logger.info(f"提取的原始文本估算 token 数: {num_estimated_tokens} (模型用于估算: {model_name_for_splitting or '默认'})")
     except Exception as e_token:
         logger.error(f"估算原始文本 token 数时发生错误 ({input_filepath}): {e_token}", exc_info=True)
@@ -89,10 +105,10 @@ def process_document_to_markdown(input_filepath: str, results_dir: str) -> Optio
     if num_estimated_tokens <= MAX_TOKENS_FOR_DIRECT_PROCESSING:
         logger.info(f"文本 token 数 ({num_estimated_tokens}) 未超过阈值 ({MAX_TOKENS_FOR_DIRECT_PROCESSING})，直接进行 LLM 分析。")
         try:
-            llm_output = analyze_text_with_llm(raw_text)
+            llm_output = analyze_text_with_llm(raw_text_content) # Pass raw_text_content
             if llm_output is None: # analyze_text_with_llm 内部已记录错误
                 logger.error(f"直接 LLM 分析失败 ({input_filepath})。")
-                return None 
+                return None
         except Exception as e_llm_direct:
             logger.error(f"直接 LLM 分析文本内容时发生意外错误 ({input_filepath}): {e_llm_direct}", exc_info=True)
             return None
@@ -102,7 +118,7 @@ def process_document_to_markdown(input_filepath: str, results_dir: str) -> Optio
         # 4.1. 分割文本
         try:
             original_text_chunks = split_text_into_chunks(
-                raw_text,
+                raw_text_content, # Pass raw_text_content
                 model_name=model_name_for_splitting, # 传递模型名称
                 max_tokens_per_chunk=DEFAULT_MAX_CHUNK_TOKENS, # 使用导入的常量
                 overlap_tokens=DEFAULT_OVERLAP_TOKENS      # 使用导入的常量
@@ -187,15 +203,17 @@ def process_document_to_markdown(input_filepath: str, results_dir: str) -> Optio
     logger.debug(f"LLM 处理完成，最终输出 (前100字符预览: '{llm_output[:100].strip()}...')")
 
     # 5. Markdown 生成
-    logger.debug(f"正在从 LLM 输出为 '{input_filepath}' 生成 Markdown...")
+    # Now pass llm_output (text with LLM labels) AND extracted_data (for placeholders)
+    logger.debug(f"正在从 LLM 输出和提取数据为 '{input_filepath}' 生成 Markdown...")
     try:
-        markdown_content = generate_markdown_from_labeled_text(llm_output)
+        # Pass both llm_output and the extracted_data to the markdown generator
+        markdown_content = generate_markdown_from_labeled_text(llm_output, extracted_data)
         if markdown_content is None or not markdown_content.strip(): # 检查是否为 None 或空/仅空白
-            logger.error(f"从 LLM 输出为 '{input_filepath}' 生成 Markdown 时出错，结果为空或无效。")
+            logger.error(f"从 LLM 输出和提取数据为 '{input_filepath}' 生成 Markdown 时出错，结果为空或无效。")
             return None
         logger.debug(f"Markdown 生成成功 (前100字符预览: '{markdown_content[:100].strip()}...')")
     except Exception as e:
-        logger.error(f"从 LLM 输出为 '{input_filepath}' 生成 Markdown 时发生意外的严重错误: {e}", exc_info=True)
+        logger.error(f"从 LLM 输出和提取数据为 '{input_filepath}' 生成 Markdown 时发生意外的严重错误: {e}", exc_info=True)
         return None
 
     # 6. 保存 Markdown 文件

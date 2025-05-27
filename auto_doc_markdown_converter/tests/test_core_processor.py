@@ -314,12 +314,16 @@ class TestCoreProcessorConcurrency(unittest.TestCase):
     def test_no_chunking_or_concurrency_if_text_is_short(self, mock_analyze_llm_direct):
         """Verify no chunking/concurrency if text is below MAX_TOKENS_FOR_DIRECT_PROCESSING."""
         short_text_content = "This is a very short text."
-        self.mock_read_file_content.return_value = short_text_content
+        self.mock_read_file_content.return_value = (short_text_content, {}) # Now returns tuple
         # MAX_TOKENS_FOR_DIRECT_PROCESSING is 50 (from setUp)
         self.mock_estimate_tokens.return_value = 40 # Below threshold
         
         mock_analyze_llm_direct.return_value = "llm_processed_short_text_direct"
         
+        # Ensure generate_markdown is set up for this test (accepts two args)
+        self.mock_generate_markdown.reset_mock() # Reset from any previous calls in other tests
+        self.mock_generate_markdown.return_value = "# Final Markdown Short"
+
         with patch('concurrent.futures.ThreadPoolExecutor') as MockExecutorNotUsed:
             result_path = core_processor.process_document_to_markdown("dummy_short_no_concurrency.txt", self.test_results_dir)
 
@@ -328,7 +332,68 @@ class TestCoreProcessorConcurrency(unittest.TestCase):
             self.mock_split_text.assert_not_called("split_text_into_chunks should not be called.")
             mock_analyze_llm_direct.assert_called_once_with(short_text_content)
             self.mock_merge_chunks.assert_not_called("merge_processed_chunks should not be called.")
-            self.mock_generate_markdown.assert_called_once_with("llm_processed_short_text_direct")
+            # generate_markdown_from_labeled_text now expects (llm_output, extracted_data)
+            self.mock_generate_markdown.assert_called_once_with("llm_processed_short_text_direct", {})
+
+
+    @patch('auto_doc_markdown_converter.src.core_processor.analyze_text_with_llm')
+    def test_process_document_pdf_with_image_and_table_integration(self, mock_analyze_llm_passthrough):
+        """
+        Integration test for processing a PDF that yields text with image and table placeholders.
+        Ensures extracted_data is passed through to the markdown generator.
+        """
+        # 1. Configure Mocks
+        self.mock_get_file_type.return_value = "pdf" # Simulate a PDF file
+        
+        # Mock read_file_content to return PDF-like extraction results
+        raw_text_from_pdf = "Text from PDF with [IMAGE_PLACEHOLDER:img1.png] and [TABLE_PLACEHOLDER_1]."
+        pdf_extracted_data = {
+            "[IMAGE_PLACEHOLDER:img1.png]": "img1.png",
+            "[TABLE_PLACEHOLDER_1]": "|Header|\n|---|\n|Data|"
+        }
+        self.mock_read_file_content.return_value = (raw_text_from_pdf, pdf_extracted_data)
+        
+        # Mock LLM to be a passthrough (it won't change the placeholders)
+        mock_analyze_llm_passthrough.side_effect = lambda text: text 
+        
+        # Ensure estimate_tokens is mocked to prevent chunking for this test, simplifying it
+        self.mock_estimate_tokens.return_value = 10 # Well below MAX_TOKENS_FOR_DIRECT_PROCESSING (50)
+        
+        # Reset and configure the mock for generate_markdown_from_labeled_text
+        self.mock_generate_markdown.reset_mock()
+        # This is what we expect the *actual* markdown generator to do (for assertion purposes)
+        # This is a bit of a self-fulfilling prophecy if generate_markdown itself is broken,
+        # but here we test that core_processor *calls* it correctly.
+        # The actual replacement is tested in test_markdown_generator.
+        expected_final_md_content = 'Text from PDF with ![](images/img1.png) and |Header|\n|---|\n|Data|. End.'
+        self.mock_generate_markdown.return_value = expected_final_md_content
+
+        # 2. Call the function under test
+        output_md_path = core_processor.process_document_to_markdown(
+            "dummy_pdf_with_content.pdf", 
+            self.test_results_dir
+        )
+
+        # 3. Assertions
+        self.assertIsNotNone(output_md_path, "Markdown file path should be returned.")
+        self.assertEqual(os.path.basename(output_md_path), "dummy_pdf_with_content.md")
+
+        # Assert that read_file_content was called correctly
+        self.mock_read_file_content.assert_called_once_with(
+            "dummy_pdf_with_content.pdf", "pdf", self.test_results_dir
+        )
+        
+        # Assert that analyze_text_with_llm was called with the raw text from PDF
+        mock_analyze_llm_passthrough.assert_called_once_with(raw_text_from_pdf)
+        
+        # Assert that generate_markdown_from_labeled_text was called with the
+        # (passthrough) LLM output AND the extracted_data from the PDF.
+        self.mock_generate_markdown.assert_called_once_with(raw_text_from_pdf, pdf_extracted_data)
+        
+        # Assert that the file was written with the content from generate_markdown
+        expected_save_path = os.path.join(self.test_results_dir, "dummy_pdf_with_content.md")
+        self.mock_open_file.assert_called_once_with(expected_save_path, "w", encoding="utf-8")
+        self.mock_open_file().write.assert_called_once_with(expected_final_md_content)
 
 
 if __name__ == '__main__':

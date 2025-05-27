@@ -61,14 +61,16 @@ document.addEventListener('DOMContentLoaded', function() {
         originalPane.innerHTML = '正在加载原始预览...';
         markdownPane.innerHTML = '正在加载 Markdown 预览...';
 
-        // Fetch DOCX HTML Preview
+        // Original Document Pane Logic
+        originalPane.innerHTML = '正在加载原始预览...'; // Set initial loading message
+
         if (originalFilename.toLowerCase().endsWith('.docx')) {
             fetch(`/preview_docx/${encodeURIComponent(originalFilename)}`)
                 .then(response => {
-                    if (!response.ok) { // Check for non-2xx HTTP status codes
-                        return response.json().then(errData => { // Try to parse error from JSON body
+                    if (!response.ok) {
+                        return response.json().then(errData => {
                             throw new Error(errData.error || `服务器错误: ${response.status}`);
-                        }).catch(() => { // Fallback if JSON parsing fails or no specific error in body
+                        }).catch(() => {
                             throw new Error(`服务器响应错误: ${response.status} ${response.statusText}`);
                         });
                     }
@@ -76,19 +78,45 @@ document.addEventListener('DOMContentLoaded', function() {
                 })
                 .then(data => {
                     if (data.html_content) {
-                        originalPane.innerHTML = data.html_content; // Mammoth/Pypandoc HTML can be directly injected
+                        originalPane.innerHTML = data.html_content;
                     } else if (data.error) {
-                        originalPane.innerHTML = `<p class="error-message">原始预览失败: ${escapeHTML(data.error)}</p>`;
+                        originalPane.innerHTML = `<p class="error-message">DOCX 预览失败: ${escapeHTML(data.error)}</p>`;
                     } else {
-                        originalPane.innerHTML = `<p class="error-message">原始预览返回了非预期的响应格式。</p>`;
+                        originalPane.innerHTML = `<p class="error-message">DOCX 预览返回了非预期的响应格式。</p>`;
                     }
                 })
                 .catch(error => {
-                    console.error('获取原始预览失败:', error);
-                    originalPane.innerHTML = `<p class="error-message">原始预览请求失败: ${escapeHTML(error.message)}</p>`;
+                    console.error('获取 DOCX 预览失败:', error);
+                    originalPane.innerHTML = `<p class="error-message">DOCX 预览请求失败: ${escapeHTML(error.message)}</p>`;
                 });
+        } else if (originalFilename.toLowerCase().endsWith('.pdf')) {
+            originalPane.innerHTML = ''; // Clear loading message
+            const iframe = document.createElement('iframe');
+            iframe.src = `/preview_pdf/${encodeURIComponent(originalFilename)}`;
+            iframe.style.width = '100%';
+            iframe.style.height = '100%';
+            iframe.style.border = 'none';
+            iframe.title = `原始 PDF 预览: ${escapeHTML(originalFilename)}`;
+            
+            // Fallback content or error handling for iframe
+            iframe.onload = function() {
+                // You could check if the content loaded is actually a PDF, 
+                // but it's tricky due to cross-origin restrictions if src is from a different domain.
+                // For same-origin, you might inspect iframe.contentDocument.contentType
+                // However, for simple cases, successful load implies the server sent something.
+                // If server sent an error page with 200 OK, that would show in iframe.
+                // Errors like 404 from server for the PDF src will usually leave iframe blank or show browser error.
+                console.log("PDF iframe loaded.");
+            };
+            iframe.onerror = function() {
+                // This onerror on iframe itself is not very reliable for content errors (like 404s)
+                console.error('PDF iframe 加载时发生错误。');
+                originalPane.innerHTML = `<p class="error-message">无法加载 PDF 预览。文件可能不存在或浏览器不支持内嵌 PDF。</p>`;
+            };
+            
+            originalPane.appendChild(iframe);
         } else {
-            originalPane.innerHTML = '<p>原始预览仅支持 .docx 文件。</p>';
+            originalPane.innerHTML = `<p>原始文档预览不支持此文件类型 (${escapeHTML(originalFilename.split('.').pop())})。</p><p>仅支持 .docx 和 .pdf 文件预览。</p>`;
         }
 
         // Fetch and Render Markdown Preview
@@ -126,8 +154,8 @@ document.addEventListener('DOMContentLoaded', function() {
             event.preventDefault(); // 阻止表单的默认提价行为
 
             // 清空之前的状态和结果
-            uploadStatus.innerHTML = '';
-            resultsArea.innerHTML = '<p>正在准备上传...</p>';
+            uploadStatus.innerHTML = '正在准备上传，请稍候...'; // 1. Initial Click
+            resultsArea.innerHTML = '<p>处理流程已启动...</p>'; // Neutral message for results area
 
             const files = fileInput.files;
 
@@ -143,7 +171,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 formData.append('files[]', files[i]); // 'files[]' 必须与后端 Flask 期望的名称一致
             }
 
-            uploadStatus.innerHTML = '正在上传文件...';
+            uploadStatus.innerHTML = '正在连接服务器并发送文件...'; // 2. Before fetch Call
 
             // 执行异步上传
             fetch('/upload', { // URL 对应 Flask 中的上传路由
@@ -151,7 +179,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 body: formData
             })
             .then(response => {
-                uploadStatus.innerHTML = '后端正在处理文件，请稍候...'; // 文件已上传，等待后端处理
+                uploadStatus.innerHTML = '文件已发送，服务器处理中，这可能需要一些时间...'; // 3. After fetch initiated
                 if (!response.ok) {
                     // 如果 HTTP 状态码不是 2xx，尝试解析错误信息
                     return response.json().then(errData => {
@@ -165,7 +193,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 return response.json(); // 解析 JSON 响应体
             })
             .then(data => {
-                uploadStatus.innerHTML = '处理完成！';
+                uploadStatus.innerHTML = '处理完毕，正在准备结果...'; // 4. After response.json()
                 resultsArea.innerHTML = ''; // 清空之前的 "正在准备..." 或错误信息
 
                 if (Array.isArray(data) && data.length > 0) {
@@ -254,19 +282,23 @@ document.addEventListener('DOMContentLoaded', function() {
                         ul.appendChild(li);
                     });
                     resultsArea.appendChild(ul);
+                    uploadStatus.innerHTML = '处理完成！'; // 5. On Successful Completion (after results are rendered)
                 } else if (data.error) { // 处理整体上传错误（如果后端这样返回）
                      resultsArea.innerHTML = `<p class="error-message">处理失败: ${escapeHTML(data.error)}</p>`;
+                     uploadStatus.innerHTML = '处理失败。'; // More specific status
                 } else if (Array.isArray(data) && data.length === 0) {
                     resultsArea.innerHTML = '<p>已上传，但未返回任何处理结果。可能是所有文件都无法处理。</p>';
+                    uploadStatus.innerHTML = '处理完成，但无有效结果。'; // More specific status
                 }
                  else {
                     resultsArea.innerHTML = '<p>未收到有效的处理结果或返回了非预期的格式。</p>';
+                    uploadStatus.innerHTML = '处理完成，但响应格式不正确。'; // More specific status
                 }
             })
             .catch(error => {
                 console.error('上传或处理过程中发生错误:', error);
-                uploadStatus.innerHTML = '发生错误。';
-                resultsArea.innerHTML = `<p class="error-message">错误: ${escapeHTML(error.message)}</p>`;
+                uploadStatus.innerHTML = '上传或处理过程中发生错误。'; // 6. On Error
+                resultsArea.innerHTML = `<p class="error-message">错误详情: ${escapeHTML(error.message)}</p>`;
             });
         });
     } else {
