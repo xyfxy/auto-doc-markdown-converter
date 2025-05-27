@@ -19,53 +19,106 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // 获取并显示 Markdown 文件预览的函数
-    function fetchAndShowPreview(filename, listItemElement) {
-        // 移除旧的预览（如果存在）
-        const oldPreview = listItemElement.querySelector('.preview-container');
-        if (oldPreview) {
-            oldPreview.remove();
+    // 新的对照预览函数
+    function fetchAndShowComparisonPreview(originalFilename, markdownFilename, listItemElement) {
+        let previewArea = listItemElement.querySelector('.comparison-preview-area');
+        
+        // 如果 previewArea 不存在，则创建它
+        if (!previewArea) {
+            previewArea = document.createElement('div');
+            previewArea.className = 'comparison-preview-area';
+            previewArea.style.display = 'none'; // Initially hidden, will be shown by button click
+            previewArea.style.marginTop = '10px';
+            previewArea.style.border = '1px solid #eee';
+            previewArea.style.padding = '10px';
+
+            previewArea.innerHTML = `
+                <div style="display: flex; justify-content: space-between;">
+                    <h4 style="margin-top:0;">原始文档预览 (DOCX)</h4>
+                    <h4 style="margin-top:0;">Markdown 预览</h4>
+                </div>
+                <div style="display: flex; justify-content: space-between; gap: 10px;">
+                    <div class="original-preview-pane" style="width: 49%; border: 1px solid #ccc; padding: 5px; height: 400px; overflow-y: auto; background-color: #f9f9f9;">
+                        正在加载原始预览...
+                    </div>
+                    <div class="markdown-preview-pane" style="width: 49%; border: 1px solid #ccc; padding: 5px; height: 400px; overflow-y: auto; background-color: #f9f9f9;">
+                        正在加载 Markdown 预览...
+                    </div>
+                </div>
+            `;
+            listItemElement.appendChild(previewArea);
         }
 
-        const previewContainer = document.createElement('div');
-        previewContainer.className = 'preview-container';
-        previewContainer.textContent = '正在加载预览...';
-        listItemElement.appendChild(previewContainer);
+        const originalPane = previewArea.querySelector('.original-preview-pane');
+        const markdownPane = previewArea.querySelector('.markdown-preview-pane');
 
-        fetch(`/download/${encodeURIComponent(filename)}`) // 使用下载链接获取文件内容
+        // Toggle display (this part is handled by the button's new onclick logic)
+        // previewArea.style.display = previewArea.style.display === 'none' ? 'block' : 'none';
+        // if (previewArea.style.display === 'none') {
+        //     return; // If hiding, don't fetch
+        // }
+
+        originalPane.innerHTML = '正在加载原始预览...';
+        markdownPane.innerHTML = '正在加载 Markdown 预览...';
+
+        // Fetch DOCX HTML Preview
+        if (originalFilename.toLowerCase().endsWith('.docx')) {
+            fetch(`/preview_docx/${encodeURIComponent(originalFilename)}`)
+                .then(response => {
+                    if (!response.ok) { // Check for non-2xx HTTP status codes
+                        return response.json().then(errData => { // Try to parse error from JSON body
+                            throw new Error(errData.error || `服务器错误: ${response.status}`);
+                        }).catch(() => { // Fallback if JSON parsing fails or no specific error in body
+                            throw new Error(`服务器响应错误: ${response.status} ${response.statusText}`);
+                        });
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.html_content) {
+                        originalPane.innerHTML = data.html_content; // Mammoth/Pypandoc HTML can be directly injected
+                    } else if (data.error) {
+                        originalPane.innerHTML = `<p class="error-message">原始预览失败: ${escapeHTML(data.error)}</p>`;
+                    } else {
+                        originalPane.innerHTML = `<p class="error-message">原始预览返回了非预期的响应格式。</p>`;
+                    }
+                })
+                .catch(error => {
+                    console.error('获取原始预览失败:', error);
+                    originalPane.innerHTML = `<p class="error-message">原始预览请求失败: ${escapeHTML(error.message)}</p>`;
+                });
+        } else {
+            originalPane.innerHTML = '<p>原始预览仅支持 .docx 文件。</p>';
+        }
+
+        // Fetch and Render Markdown Preview
+        fetch(`/download/${encodeURIComponent(markdownFilename)}`)
             .then(response => {
                 if (!response.ok) {
-                    throw new Error(`无法获取预览: ${response.status} ${response.statusText}`);
+                    throw new Error(`获取 Markdown 失败: ${response.status} ${response.statusText}`);
                 }
-                return response.text(); // 获取文本内容
+                return response.text();
             })
             .then(markdownText => {
-                // 新的 Markdown 到 HTML 转换逻辑
                 if (typeof marked === 'undefined') {
                     console.error('Marked.js 库未加载。');
-                    previewContainer.innerHTML = '<p class="error-message">Markdown 预览库加载失败。</p>';
+                    markdownPane.innerHTML = '<p class="error-message">Markdown 预览库加载失败。</p>';
                     return;
                 }
                 try {
-                    const htmlContent = marked.parse(markdownText); // 使用 marked.parse()
-                    previewContainer.innerHTML = ''; // 清空 "正在加载预览..."
-                    // 为了安全起见，如果marked.parse返回的是不可信内容且需要进一步处理，
-                    // 可能需要在这里进行HTML净化 (DOMPurify)，但对于从自己服务器获取的 .md 文件内容，
-                    // 通常认为是可信的。
-                    const previewContentDiv = document.createElement('div');
-                    previewContentDiv.className = 'markdown-preview'; // 可以保留这个类名用于样式
-                    previewContentDiv.innerHTML = htmlContent;
-                    previewContainer.appendChild(previewContentDiv);
+                    const htmlContent = marked.parse(markdownText);
+                    markdownPane.innerHTML = htmlContent; // marked.parse output is generally safe for preview
                 } catch (e) {
                     console.error('Markdown 解析错误:', e);
-                    previewContainer.innerHTML = `<p class="error-message">Markdown 内容解析时发生错误: ${escapeHTML(e.message)}</p>`;
+                    markdownPane.innerHTML = `<p class="error-message">Markdown 内容解析时发生错误: ${escapeHTML(e.message)}</p>`;
                 }
             })
             .catch(error => {
-                console.error('获取预览失败:', error);
-                previewContainer.innerHTML = `<p class="error-message">预览失败: ${escapeHTML(error.message)}</p>`;
+                console.error('获取 Markdown 预览失败:', error);
+                markdownPane.innerHTML = `<p class="error-message">Markdown 预览失败: ${escapeHTML(error.message)}</p>`;
             });
     }
+
 
     // 添加表单提交事件监听器
     if (uploadForm) {
@@ -133,26 +186,70 @@ document.addEventListener('DOMContentLoaded', function() {
                                 downloadLink.className = 'download-link';
                                 downloadLink.setAttribute('download', item.processed_filename); // 建议浏览器下载
 
-                                const previewButton = document.createElement('button');
-                                previewButton.textContent = '预览 Markdown';
-                                previewButton.className = 'preview-button';
-                                // 使用闭包确保 filename 在 onclick 时是正确的
-                                previewButton.onclick = (function(filename, currentListItem) {
-                                    return function() { fetchAndShowPreview(filename, currentListItem); };
-                                })(item.processed_filename, li);
+                                const downloadLink = document.createElement('a');
+                                downloadLink.href = `/download/${encodeURIComponent(item.processed_filename)}`;
+                                downloadLink.textContent = `下载 ${escapeHTML(item.processed_filename)}`;
+                                downloadLink.className = 'download-link';
+                                downloadLink.setAttribute('download', item.processed_filename);
+                                li.appendChild(downloadLink); // Append link
 
-                                content += downloadLink.outerHTML + ' ' + previewButton.outerHTML;
+                                li.appendChild(document.createTextNode(' ')); // Add a space
+
+                                const comparisonPreviewButton = document.createElement('button');
+                                comparisonPreviewButton.textContent = '对照预览';
+                                comparisonPreviewButton.className = 'comparison-preview-button';
+                                
+                                // Create the preview area structure but keep it hidden initially
+                                // This structure will be appended to 'li' when the button is first clicked and area needs to be shown.
+                                // Or, create it here and append to li, then toggle display. Let's do the latter for simplicity.
+                                
+                                let previewArea = li.querySelector('.comparison-preview-area');
+                                if (!previewArea) { // Create if not exists (e.g. if li content is cleared and rebuilt)
+                                    previewArea = document.createElement('div');
+                                    previewArea.className = 'comparison-preview-area';
+                                    previewArea.style.display = 'none'; // Initially hidden
+                                    previewArea.style.marginTop = '10px';
+                                    previewArea.style.border = '1px solid #eee';
+                                    previewArea.style.padding = '10px';
+                                    previewArea.innerHTML = `
+                                        <div style="display: flex; justify-content: space-between;">
+                                            <h4 style="margin-top:0;">原始文档预览 (DOCX)</h4>
+                                            <h4 style="margin-top:0;">Markdown 预览</h4>
+                                        </div>
+                                        <div style="display: flex; justify-content: space-between; gap: 10px;">
+                                            <div class="original-preview-pane" style="width: 49%; border: 1px solid #ccc; padding: 5px; height: 400px; overflow-y: auto; background-color: #f9f9f9;"></div>
+                                            <div class="markdown-preview-pane" style="width: 49%; border: 1px solid #ccc; padding: 5px; height: 400px; overflow-y: auto; background-color: #f9f9f9;"></div>
+                                        </div>
+                                    `;
+                                    // li.appendChild(previewArea); // Append it after all other content in li
+                                }
+
+
+                                comparisonPreviewButton.onclick = (function(origFname, mdFname, currentLi, area) {
+                                    return function() {
+                                        const isVisible = area.style.display !== 'none';
+                                        area.style.display = isVisible ? 'none' : 'block';
+                                        if (!isVisible) { 
+                                            fetchAndShowComparisonPreview(origFname, mdFname, currentLi);
+                                        }
+                                    };
+                                })(item.original_filename, item.processed_filename, li, previewArea);
+                                
+                                li.appendChild(comparisonPreviewButton); // Append button
+                                li.appendChild(previewArea); // Append the (initially hidden) preview area
+
                             } else {
-                                content += `<span>Markdown 内容已生成 (但未提供下载链接)。</span>`;
+                                const noDownloadSpan = document.createElement('span');
+                                noDownloadSpan.textContent = `Markdown 内容已生成 (但未提供下载链接)。`;
+                                li.appendChild(noDownloadSpan);
                             }
-                        } else {
-                            content += `<span class="status-error">处理失败。</span> 原因: ${escapeHTML(item.message || '未知错误')}`;
+                        } else { // item.status !== 'success'
+                            const errorSpan = document.createElement('span');
+                            errorSpan.className = 'status-error';
+                            errorSpan.textContent = `处理失败。 原因: ${escapeHTML(item.message || '未知错误')}`;
+                            li.appendChild(errorSpan);
                         }
-                        li.innerHTML = content; // 设置 innerHTML 后，之前绑定的 onclick 可能需要重新处理，但这里是直接生成 HTML 字符串
-                        
-                        // 重新获取按钮并绑定事件（如果 previewButton.onclick 的方式在某些浏览器有问题）
-                        // 或者，在创建按钮后，先附加到 li，再通过 li.querySelector 找到按钮并绑定事件。
-                        // 当前的闭包方式通常是有效的。
+                        // li.innerHTML = content; // Avoid using innerHTML to preserve event listeners
 
                         ul.appendChild(li);
                     });
@@ -176,3 +273,4 @@ document.addEventListener('DOMContentLoaded', function() {
         console.error('上传表单 (uploadForm) 未在 DOM 中找到。');
     }
 });
+// End of script.js - test modification

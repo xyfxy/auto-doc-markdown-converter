@@ -72,19 +72,23 @@ def upload_files():
             original_filename = secure_filename(file.filename)
             temp_upload_path = os.path.join(app.config['UPLOAD_FOLDER'], original_filename)
             
+            # original_filename is already secured
+            # Save the file to UPLOAD_FOLDER for potential preview and processing
+            persistent_upload_path = os.path.join(app.config['UPLOAD_FOLDER'], original_filename)
+            
             try:
-                file.save(temp_upload_path)
-                logger.info(f"文件 '{original_filename}' 已临时保存到 '{temp_upload_path}'")
+                file.save(persistent_upload_path)
+                logger.info(f"文件 '{original_filename}' 已保存到 '{persistent_upload_path}' 供处理和预览。")
 
-                # 调用核心处理逻辑
-                markdown_file_path = process_document_to_markdown(temp_upload_path, app.config['RESULTS_FOLDER'])
+                # 调用核心处理逻辑，使用保存的原始文件路径
+                markdown_file_path = process_document_to_markdown(persistent_upload_path, app.config['RESULTS_FOLDER'])
 
                 if markdown_file_path:
                     processed_filename = os.path.basename(markdown_file_path)
                     results.append({
-                        "original_filename": original_filename,
+                        "original_filename": original_filename, # Keep original for user display
                         "status": "success",
-                        "processed_filename": processed_filename, # 用于后续下载
+                        "processed_filename": processed_filename, 
                         "message": "文件处理成功"
                     })
                     logger.info(f"文件 '{original_filename}' 处理成功，输出为 '{processed_filename}'")
@@ -92,7 +96,7 @@ def upload_files():
                     results.append({
                         "original_filename": original_filename,
                         "status": "error",
-                        "message": "文件处理失败 (核心处理器未返回有效路径，详见服务器日志)"
+                        "message": "文件处理失败 (核心处理器未返回有效路径)"
                     })
                     logger.warning(f"文件 '{original_filename}' 处理失败 (核心处理器返回 None)。")
 
@@ -103,16 +107,12 @@ def upload_files():
                     "status": "error",
                     "message": f"服务器内部错误: {str(e)}"
                 })
-            finally:
-                # 清理临时上传的文件
-                if os.path.exists(temp_upload_path):
-                    try:
-                        os.remove(temp_upload_path)
-                        logger.debug(f"已删除临时上传文件: {temp_upload_path}")
-                    except OSError as e_remove:
-                        logger.error(f"删除临时文件 {temp_upload_path} 失败: {e_remove}")
+            # The original file at persistent_upload_path is intentionally NOT deleted here
+            # to make it available for the /preview_docx route.
+            # A separate cleanup strategy for the UPLOAD_FOLDER would be needed for long-term deployments.
+
         elif file and file.filename: # 文件存在但类型不允许
-            original_filename = secure_filename(file.filename)
+            original_filename = secure_filename(file.filename) # Secure it anyway for logging
             logger.warning(f"文件 '{original_filename}' 的类型不被允许。")
             results.append({
                 "original_filename": original_filename,
@@ -155,25 +155,69 @@ def download_file(filename):
         logger.error(f"下载文件 '{filename}' 时发生服务器内部错误: {e}", exc_info=True)
         return jsonify({"error": "服务器内部错误，无法提供文件下载。"}), 500
 
+# Placeholder for mammoth import, will be attempted later
+# import mammoth 
+
+@app.route('/preview_docx/<path:filename>')
+def preview_docx_file(filename):
+    # filename is derived from user input (part of URL), so ensure it's secured
+    # although routes with <path:filename> are generally safe from directory traversal by default by Werkzeug,
+    # an extra layer of secure_filename is good practice if using it to construct paths directly.
+    # However, for this to work, `filename` must match what was stored.
+    # If `original_filename` from upload was `secure_filename(file.filename)`, then `filename` here should also be.
+    # Let's assume `filename` as received is already the secured version used for saving.
+    
+    # Construct the full path to the original uploaded .docx file
+    original_file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
+    if not os.path.exists(original_file_path):
+        logger.error(f"请求预览的 DOCX 文件未找到: {original_file_path}")
+        return jsonify({"error": "原始文件未找到，可能已被处理或删除。"}), 404
+
+    if not filename.lower().endswith('.docx'):
+        logger.warning(f"请求预览的文件不是 DOCX: {filename}")
+        return jsonify({"error": "请求的文件不是 DOCX 格式。"}), 400
+
+    # Attempt to use mammoth first
+    try:
+        import mammoth # Try importing mammoth
+        logger.info(f"尝试使用 mammoth 为 {original_file_path} 生成 HTML 预览。")
+        with open(original_file_path, 'rb') as docx_file:
+            result = mammoth.convert_to_html(docx_file)
+            html_output = result.value 
+            if result.messages:
+                 logger.warning(f"Mammoth 在转换 {original_file_path} 时产生消息: {result.messages}")
+        return jsonify({"html_content": html_output, "library": "mammoth"})
+    except ImportError:
+        logger.warning("Mammoth 库未安装。尝试使用 pypandoc。")
+        # Try pypandoc if mammoth is not available
+        try:
+            import pypandoc
+            logger.info(f"尝试使用 pypandoc 为 {original_file_path} 生成 HTML 预览。")
+            # Ensure Pandoc is installed and in PATH for pypandoc to work
+            # pypandoc.ensure_pandoc_installed() # This might raise an error or download
+            try:
+                # Check if pandoc is available by getting its version
+                pypandoc.get_pandoc_version()
+                logger.info(f"Pandoc version: {pypandoc.get_pandoc_version()} found.")
+            except OSError: # Corresponds to pandoc not found
+                logger.error("pypandoc 错误：Pandoc 可执行文件未在系统中找到。")
+                return jsonify({"error": "服务器错误：Pandoc 未安装或不在 PATH 中，无法进行 DOCX 预览。"}), 500
+
+            html_output = pypandoc.convert_file(original_file_path, 'html5', format='docx')
+            return jsonify({"html_content": html_output, "library": "pypandoc"})
+        except ImportError:
+            logger.error("Pypandoc 库也未安装。无法为 DOCX 生成 HTML 预览。")
+            return jsonify({"error": "服务器错误：DOCX 到 HTML 转换库 (Mammoth, Pypandoc) 均不可用。"}), 500
+        except Exception as e_pandoc: # Catch errors from pypandoc (e.g., Pandoc conversion error)
+            logger.error(f"使用 pypandoc 转换 DOCX {original_file_path} 到 HTML 时发生错误: {e_pandoc}", exc_info=True)
+            return jsonify({"error": f"使用 pypandoc 转换 DOCX 到 HTML 失败: {str(e_pandoc)}"}), 500
+    except Exception as e_mammoth: # Catch other errors from mammoth
+        logger.error(f"使用 mammoth 转换 DOCX {original_file_path} 到 HTML 时发生错误: {e_mammoth}", exc_info=True)
+        return jsonify({"error": f"使用 mammoth 转换 DOCX 到 HTML 失败: {str(e_mammoth)}"}), 500
+
 
 if __name__ == '__main__':
-    # 为了确保 src 模块中的日志也能按预期工作 (如果它们也使用 logging.getLogger)
-    # 我们可以在这里调用 setup_logging 来配置根记录器
-    # 这样，即使 Flask 的 app.logger 有自己的配置，其他模块的日志也能输出
-    # 注意：如果 setup_logging 改变了根记录器的处理器，可能会影响 Flask 默认的日志行为
-    # 一个更稳健的方法可能是获取根记录器并确保其级别和处理器适合开发
-    if os.environ.get("WERKZEUG_RUN_MAIN") != "true": # 避免在 Flask 重载时重复配置
-        log_level = logging.DEBUG if app.debug else logging.INFO
-        # setup_logging(log_level) 
-        # 或者，更简单地确保 Flask logger 级别足够低以显示所有信息
-        app.logger.setLevel(logging.DEBUG if app.debug else logging.INFO)
-        # 如果 src 模块的日志不显示，则取消注释 setup_logging(log_level)
-        # 并确保 setup_logging 不会与 Flask 的日志系统冲突（例如，通过检查处理器是否已存在）
-        
-        # 临时：为确保 core_processor 等模块的日志能输出，我们调用 setup_logging
-        # 这会配置根记录器，Flask 的 app.logger 也会继承这个配置（或被覆盖）
-        # 这对于开发调试是可行的，但生产环境需要更精细的日志管理策略
+    if os.environ.get("WERKZEUG_RUN_MAIN") != "true": 
         setup_logging(logging.DEBUG if app.debug else logging.INFO)
-
-
     app.run(host='0.0.0.0', port=5000, debug=True)

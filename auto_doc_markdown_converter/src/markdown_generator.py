@@ -1,7 +1,10 @@
 import logging
+import re # Import re module
 
 # 获取模块特定的记录器
 logger = logging.getLogger(__name__)
+
+IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[IMAGE_PLACEHOLDER:([^\]]+)\]")
 
 def generate_markdown_from_labeled_text(labeled_text: str) -> str:
     """
@@ -34,8 +37,27 @@ def generate_markdown_from_labeled_text(labeled_text: str) -> str:
             markdown_blocks.append(f"### {line[4:]}")
         elif line.startswith("H4: "):
             markdown_blocks.append(f"#### {line[4:]}")
+        elif line.startswith("H5: "): # 新增
+            markdown_blocks.append(f"##### {line[4:]}")
+        elif line.startswith("H6: "): # 新增
+            markdown_blocks.append(f"###### {line[4:]}")
         elif line.startswith("P: "):
-            markdown_blocks.append(line[3:])
+            content = line[3:]
+            # Process image placeholders in paragraph content
+            content_parts = []
+            last_end = 0
+            for match in IMAGE_PLACEHOLDER_PATTERN.finditer(content):
+                # Add text before the placeholder
+                content_parts.append(content[last_end:match.start()])
+                image_filename = match.group(1)
+                # Assuming 'images' is the subdirectory where images are stored relative to the Markdown file
+                markdown_image_link = f"![](images/{image_filename})"
+                content_parts.append(markdown_image_link)
+                last_end = match.end()
+            # Add any remaining text after the last placeholder
+            content_parts.append(content[last_end:])
+            processed_content = "".join(content_parts)
+            markdown_blocks.append(processed_content)
         else:
             logger.warning(f"第 {i+1} 行无法识别标签，已跳过: '{line_raw}'")
             # 继续到下一行，有效地跳过格式错误的行

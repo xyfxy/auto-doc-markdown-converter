@@ -66,7 +66,8 @@ def process_document_to_markdown(input_filepath: str, results_dir: str) -> Optio
     # 3. 读取文件内容
     logger.debug(f"正在从 '{input_filepath}' (类型: {file_type}) 读取内容...")
     try:
-        raw_text = read_file_content(input_filepath, file_type)
+        # Pass results_dir to read_file_content, especially for DOCX image extraction
+        raw_text = read_file_content(input_filepath, file_type, results_dir)
         if raw_text is None:
             # read_file_content 内部已记录具体错误 (例如，文件为空或提取失败)
             logger.error(f"未能从文件 '{input_filepath}' 读取到有效内容。")
